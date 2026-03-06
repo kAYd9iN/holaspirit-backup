@@ -1,3 +1,18 @@
-/backup
-/backup/
+# Compiled binaries
+backup
+holaspirit-backup
 *.exe
+
+# Backup output directory
+/backup/
+
+# Secrets
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
