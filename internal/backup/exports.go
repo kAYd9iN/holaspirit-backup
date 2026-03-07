@@ -13,6 +13,10 @@ import (
 	"github.com/kAYd9iN/holaspirit-backup/internal/storage"
 )
 
+// httpClient is a package-level client with a timeout, shared by the Exporter.
+// http.DefaultClient has no timeout and must not be used for external calls.
+var httpClient = &http.Client{Timeout: 60 * time.Second}
+
 // Exporter triggers async PDF/XLSX exports and downloads the results.
 type Exporter struct {
 	client       *api.Client
@@ -61,7 +65,7 @@ func (e *Exporter) triggerExport(ctx context.Context, path string) (string, erro
 	req.Header.Set("Authorization", "Bearer "+e.client.Token())
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -118,7 +122,7 @@ func (e *Exporter) tryDownload(ctx context.Context, url string) ([]byte, bool, e
 	}
 	req.Header.Set("Authorization", "Bearer "+e.client.Token())
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, false, err
 	}

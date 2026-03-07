@@ -24,6 +24,7 @@ func main() {
 	orgID := flag.String("org-id", "", "Organization ID (auto-detected if empty)")
 	dryRun := flag.Bool("dry-run", false, "Test connection without writing files")
 	showVer := flag.Bool("version", false, "Show version and exit")
+	timeoutMin := flag.Int("timeout", 120, "Overall timeout in minutes (0 = no timeout)")
 	flag.Parse()
 
 	if *showVer {
@@ -39,7 +40,13 @@ func main() {
 	}
 
 	client := api.NewClient(holaspiritBaseURL, token)
+
 	ctx := context.Background()
+	if *timeoutMin > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(*timeoutMin)*time.Minute)
+		defer cancel()
+	}
 
 	if *orgID == "" {
 		id, err := api.DiscoverOrgID(ctx, client)
