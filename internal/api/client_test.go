@@ -67,3 +67,65 @@ func TestClientGet_Fails_After_MaxRetries(t *testing.T) {
 		t.Fatal("expected error after max retries")
 	}
 }
+
+func TestClientDoesNotRetryOn4xx(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusNotFound) // 404
+	}))
+	defer srv.Close()
+
+	c := api.NewClient(srv.URL, "test-token")
+	c.MaxRetries = 3
+	c.RetryDelay = 0
+
+	_, err := c.Get(context.Background(), "/api/test")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 1 {
+		t.Fatalf("expected 1 call (no retry on 404), got %d", calls)
+	}
+}
+
+func TestClientRetriesOn5xx(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := api.NewClient(srv.URL, "test-token")
+	c.MaxRetries = 2
+	c.RetryDelay = 0
+
+	_, err := c.Get(context.Background(), "/api/test")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 3 { // 1 initial + 2 retries
+		t.Fatalf("expected 3 calls, got %d", calls)
+	}
+}
+
+func TestClientOnlyMakesGETRequests(t *testing.T) {
+	nonGetSeen := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			nonGetSeen = true
+		}
+		w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	c := api.NewClient(srv.URL, "test-token")
+	c.MaxRetries = 0
+	for i := 0; i < 5; i++ {
+		c.Get(context.Background(), "/api/test")
+	}
+	if nonGetSeen {
+		t.Error("non-GET request was made by client")
+	}
+}
