@@ -24,7 +24,7 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "verify" {
 		fs := flag.NewFlagSet("verify", flag.ExitOnError)
 		dir := fs.String("dir", "", "Backup directory to verify (required)")
-		fs.Parse(os.Args[2:]) //nolint:errcheck
+		fs.Parse(os.Args[2:]) //nolint:errcheck // #nosec G104 -- FlagSet uses ExitOnError; return value is unreachable
 		if *dir == "" {
 			fmt.Fprintln(os.Stderr, "usage: backup verify --dir <path>")
 			os.Exit(2)
