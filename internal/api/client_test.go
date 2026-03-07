@@ -69,10 +69,10 @@ func TestClientGet_Fails_After_MaxRetries(t *testing.T) {
 }
 
 func TestClientDoesNotRetryOn4xx(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		w.WriteHeader(http.StatusNotFound) // 404
+		calls.Add(1)
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 
@@ -84,15 +84,15 @@ func TestClientDoesNotRetryOn4xx(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if calls != 1 {
-		t.Fatalf("expected 1 call (no retry on 404), got %d", calls)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected 1 call (no retry on 404), got %d", got)
 	}
 }
 
 func TestClientRetriesOn5xx(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -105,16 +105,37 @@ func TestClientRetriesOn5xx(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if calls != 3 { // 1 initial + 2 retries
-		t.Fatalf("expected 3 calls, got %d", calls)
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("expected 3 calls (1 initial + 2 retries), got %d", got)
+	}
+}
+
+func TestClientRetriesOn429(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	c := api.NewClient(srv.URL, "test-token")
+	c.MaxRetries = 2
+	c.RetryDelay = 0
+
+	_, err := c.Get(context.Background(), "/api/test")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("expected 3 calls (1 initial + 2 retries on 429), got %d", got)
 	}
 }
 
 func TestClientOnlyMakesGETRequests(t *testing.T) {
-	nonGetSeen := false
+	var nonGetSeen atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			nonGetSeen = true
+			nonGetSeen.Store(true)
 		}
 		w.Write([]byte(`{"data":[]}`))
 	}))
@@ -125,7 +146,7 @@ func TestClientOnlyMakesGETRequests(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		c.Get(context.Background(), "/api/test")
 	}
-	if nonGetSeen {
+	if nonGetSeen.Load() {
 		t.Error("non-GET request was made by client")
 	}
 }
