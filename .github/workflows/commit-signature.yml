@@ -51,9 +51,16 @@ jobs:
           echo "head=$HEAD" >> "$GITHUB_OUTPUT"
 
       - name: Verify commit signatures
+        env:
+          COMMIT_SIGNING_PUBLIC_KEY: ${{ secrets.COMMIT_SIGNING_PUBLIC_KEY }}
         run: |
           chmod +x ./scripts/verify_signed_commits.sh
+          STRICT_FLAG=""
+          if [ -n "${COMMIT_SIGNING_PUBLIC_KEY:-}" ]; then
+            STRICT_FLAG="--strict"
+          fi
           ./scripts/verify_signed_commits.sh \
+            ${STRICT_FLAG} \
             "${{ steps.range.outputs.base }}" \
             "${{ steps.range.outputs.head }}"
 
