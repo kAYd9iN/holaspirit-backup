@@ -10,6 +10,9 @@ import (
 	"github.com/kAYd9iN/holaspirit-backup/internal/storage"
 )
 
+// workerCount is the number of concurrent endpoint fetchers.
+const workerCount = 5
+
 // Result holds the outcome of fetching one endpoint.
 type Result struct {
 	Name    string
@@ -17,19 +20,31 @@ type Result struct {
 	Err     error
 }
 
-// RunFetchers concurrently fetches all endpoints and writes JSON files.
+// RunFetchers fetches all endpoints concurrently using a bounded worker pool.
 func RunFetchers(ctx context.Context, client *api.Client, w *storage.Writer, endpoints []api.Endpoint) []Result {
+	type indexedJob struct {
+		idx int
+		ep  api.Endpoint
+	}
+
+	jobs := make(chan indexedJob, len(endpoints))
 	results := make([]Result, len(endpoints))
 	var wg sync.WaitGroup
 
-	for i, ep := range endpoints {
+	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
-		go func(idx int, endpoint api.Endpoint) {
+		go func() {
 			defer wg.Done()
-			results[idx] = fetch(ctx, client, w, endpoint)
-		}(i, ep)
+			for job := range jobs {
+				results[job.idx] = fetch(ctx, client, w, job.ep)
+			}
+		}()
 	}
 
+	for i, ep := range endpoints {
+		jobs <- indexedJob{idx: i, ep: ep}
+	}
+	close(jobs)
 	wg.Wait()
 	return results
 }
