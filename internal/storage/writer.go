@@ -10,8 +10,10 @@ import (
 	"time"
 )
 
-// unsafeChars matches any character that is not alphanumeric, underscore, or hyphen.
-var unsafeChars = regexp.MustCompile(`[^a-zA-Z0-9_\-]`)
+// unsafeChars matches any character that is not alphanumeric, underscore, hyphen, or dot.
+// Dots are allowed for file extensions (e.g. "export.pdf"); path traversal via ".."
+// is caught by the filepath.Rel containment check in each write method.
+var unsafeChars = regexp.MustCompile(`[^a-zA-Z0-9_\-\.]`)
 
 // sanitizeName replaces all unsafe characters with underscores, preventing
 // path traversal via endpoint names.
@@ -34,6 +36,14 @@ func NewWriter(baseDir string, ts time.Time) (*Writer, error) {
 
 func (w *Writer) Dir() string { return w.dir }
 
+// isOutsideDir returns true when a filepath.Rel result indicates the path
+// escapes the base directory. It checks for the path component ".." rather
+// than a simple string prefix, so sanitized names like ".._.._foo" are not
+// falsely flagged.
+func isOutsideDir(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // WriteJSON sanitizes name, pretty-prints data, and writes it to <name>.json
 // within the backup directory. Path traversal attempts are blocked by sanitization
 // and a belt-and-suspenders containment check.
@@ -43,7 +53,7 @@ func (w *Writer) WriteJSON(name string, data []byte) error {
 
 	// Belt-and-suspenders: verify destination is inside the backup directory.
 	rel, err := filepath.Rel(w.dir, dest)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	if err != nil || isOutsideDir(rel) {
 		return fmt.Errorf("path traversal detected for name %q", name)
 	}
 
@@ -66,7 +76,7 @@ func (w *Writer) WriteFile(name string, data []byte) error {
 
 	// Belt-and-suspenders: verify destination is inside the backup directory.
 	rel, err := filepath.Rel(w.dir, dest)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	if err != nil || isOutsideDir(rel) {
 		return fmt.Errorf("path traversal detected for name %q", name)
 	}
 

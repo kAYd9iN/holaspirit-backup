@@ -83,7 +83,7 @@ func TestWriteJSONSanitizesName(t *testing.T) {
 		wantFile string
 	}{
 		{"circles", "circles.json"},
-		{"../../etc/passwd", "______etc_passwd.json"},
+		{"../../etc/passwd", ".._.._etc_passwd.json"},
 		{"foo/bar", "foo_bar.json"},
 		{"normal-name_123", "normal-name_123.json"},
 	}
@@ -115,12 +115,16 @@ func TestWriteJSONStaysWithinBackupDir(t *testing.T) {
 		if err := w.WriteJSON(name, []byte(`[]`)); err != nil {
 			continue
 		}
-		// If no error, all written files must be inside the backup dir
+		// If no error, all written files must be inside the backup dir.
+		// os.ReadDir returns only direct children so fullPath is always inside w.Dir();
+		// we use a path-aware escape check (not a bare string prefix) to avoid
+		// false positives on sanitized names like ".._.._etc_passwd.json".
 		entries, _ := os.ReadDir(w.Dir())
 		for _, e := range entries {
 			fullPath := filepath.Join(w.Dir(), e.Name())
 			rel, err := filepath.Rel(w.Dir(), fullPath)
-			if err != nil || strings.HasPrefix(rel, "..") {
+			escaped := err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+			if escaped {
 				t.Errorf("file escaped backup dir: %s", fullPath)
 			}
 		}
