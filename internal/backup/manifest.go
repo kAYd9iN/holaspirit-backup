@@ -54,6 +54,8 @@ func (m *Manifest) AddFailedFile(name string, err error) {
 }
 
 func (m *Manifest) addEntry(path, status, errMsg string, records int) error {
+	// #nosec G304 -- path is constructed internally from the backup output directory,
+	// never from user input. All callers use filepath.Join(w.Dir(), filename).
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
@@ -89,5 +91,5 @@ func (m *Manifest) Write(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0640)
+	return os.WriteFile(path, data, 0600)
 }
