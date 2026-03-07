@@ -89,7 +89,7 @@ func main() {
 	}
 
 	manifestPath := filepath.Join(w.Dir(), "backup-manifest.json")
-	if err := manifest.Write(manifestPath); err != nil {
+	if err := manifest.Write(manifestPath, token); err != nil {
 		log.Fatalf("ERROR writing manifest: %v", err)
 	}
 
