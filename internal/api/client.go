@@ -47,6 +47,7 @@ func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.MaxRetries; attempt++ {
 		if attempt > 0 {
+			// Exponential backoff: 2s, 4s, 8s for attempts 1, 2, 3
 			delay := c.RetryDelay * time.Duration(1<<uint(attempt-1))
 			select {
 			case <-time.After(delay):
