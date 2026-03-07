@@ -1,6 +1,6 @@
 module github.com/kAYd9iN/holaspirit-backup
 
-go 1.24.0
+go 1.25.8
 
 require (
 	github.com/danieljoos/wincred v1.2.3
