@@ -14,10 +14,10 @@ import (
 	"github.com/kAYd9iN/holaspirit-backup/internal/storage"
 )
 
-const (
-	version           = "1.0.0"
-	holaspiritBaseURL = "https://app.holaspirit.com"
-)
+// version is set at build time via -ldflags "-X main.version=vX.Y.Z"
+var version = "dev"
+
+const holaspiritBaseURL = "https://app.holaspirit.com"
 
 func main() {
 	// Subcommand dispatch
