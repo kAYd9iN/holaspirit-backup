@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -20,6 +20,19 @@ const (
 )
 
 func main() {
+	// Subcommand dispatch
+	if len(os.Args) > 1 && os.Args[1] == "verify" {
+		fs := flag.NewFlagSet("verify", flag.ExitOnError)
+		dir := fs.String("dir", "", "Backup directory to verify (required)")
+		fs.Parse(os.Args[2:]) //nolint:errcheck
+		if *dir == "" {
+			fmt.Fprintln(os.Stderr, "usage: backup verify --dir <path>")
+			os.Exit(2)
+		}
+		os.Exit(runVerify(*dir))
+	}
+
+	// Main backup command
 	outputDir := flag.String("output", "./backup", "Backup destination directory")
 	orgID := flag.String("org-id", "", "Organization ID (auto-detected if empty)")
 	dryRun := flag.Bool("dry-run", false, "Test connection without writing files")
@@ -32,11 +45,11 @@ func main() {
 		os.Exit(0)
 	}
 
-	log.SetFlags(log.Ldate | log.Ltime)
-
 	token, err := getToken()
 	if err != nil {
-		log.Fatalf("ERROR loading token: %v\n\nOn Windows, store credentials with:\n  cmdkey /generic:holaspirit-backup /user:api /pass:api:YOUR_TOKEN", err)
+		slog.Error("loading token", "error", err,
+			"hint", "On Windows: cmdkey /generic:holaspirit-backup /user:api /pass:api:TOKEN")
+		os.Exit(2)
 	}
 
 	client := api.NewClient(holaspiritBaseURL, token)
@@ -51,48 +64,53 @@ func main() {
 	if *orgID == "" {
 		id, err := api.DiscoverOrgID(ctx, client)
 		if err != nil {
-			log.Fatalf("ERROR discovering organization ID: %v", err)
+			slog.Error("discovering organization ID", "error", err)
+			os.Exit(2)
 		}
 		*orgID = id
-		log.Printf("Organization ID: %s", *orgID)
+		slog.Info("organization discovered", "id", *orgID)
 	}
 
 	if *dryRun {
-		log.Println("Dry run successful — connection OK")
+		slog.Info("dry run successful — connection OK")
 		os.Exit(0)
 	}
 
 	ts := time.Now()
 	w, err := storage.NewWriter(*outputDir, ts)
 	if err != nil {
-		log.Fatalf("ERROR creating backup directory: %v", err)
+		slog.Error("creating backup directory", "error", err)
+		os.Exit(2)
 	}
-	log.Printf("Backup directory: %s", w.Dir())
+	slog.Info("backup directory created", "path", w.Dir())
 
 	endpoints := api.AllEndpoints(*orgID)
-	log.Printf("Fetching %d endpoints concurrently...", len(endpoints))
+	slog.Info("fetching endpoints", "count", len(endpoints))
 
 	manifest := backup.NewManifest(*orgID, version, ts)
 	results := backup.RunFetchers(ctx, client, w, endpoints)
 
+	exitCode := 0
 	for _, r := range results {
 		if r.Err != nil {
-			log.Printf("WARN: %s failed: %v", r.Name, r.Err)
+			slog.Warn("endpoint failed", "name", r.Name, "error", r.Err)
 			manifest.AddFailedFile(r.Name, r.Err)
+			exitCode = 1
 		} else {
-			log.Printf("OK: %s (%d records)", r.Name, r.Records)
+			slog.Info("endpoint ok", "name", r.Name, "records", r.Records)
 			filePath := filepath.Join(w.Dir(), r.Name+".json")
 			if err := manifest.AddFile(filePath); err != nil {
-				log.Printf("WARN: manifest hash for %s failed: %v", r.Name, err)
+				slog.Warn("manifest hash failed", "name", r.Name, "error", err)
 			}
 		}
 	}
 
 	manifestPath := filepath.Join(w.Dir(), "backup-manifest.json")
 	if err := manifest.Write(manifestPath, token); err != nil {
-		log.Fatalf("ERROR writing manifest: %v", err)
+		slog.Error("writing manifest", "error", err)
+		os.Exit(2)
 	}
 
-	log.Printf("Manifest written: %s", manifestPath)
-	log.Printf("Backup complete: %s", w.Dir())
+	slog.Info("backup complete", "dir", w.Dir())
+	os.Exit(exitCode)
 }
