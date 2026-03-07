@@ -1,0 +1,79 @@
+name: commit-signature-verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Base commit SHA (optional)"
+        required: false
+        type: string
+      head:
+        description: "Head commit SHA (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify-commit-signatures:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+
+      - name: Determine commit range
+        id: range
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            BASE="$(jq -r '.pull_request.base.sha' "$GITHUB_EVENT_PATH")"
+            HEAD="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
+          elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            BASE="${{ github.event.inputs.base }}"
+            HEAD="${{ github.event.inputs.head }}"
+            if [ -z "$HEAD" ]; then
+              HEAD="$(git rev-parse HEAD)"
+            fi
+            if [ -z "$BASE" ]; then
+              BASE="$(git rev-parse "${HEAD}^" 2>/dev/null || echo 0000000000000000000000000000000000000000)"
+            fi
+          else
+            BASE="$(jq -r '.before' "$GITHUB_EVENT_PATH")"
+            HEAD="$(jq -r '.after' "$GITHUB_EVENT_PATH")"
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+
+      - name: Verify commit signatures
+        run: |
+          chmod +x ./scripts/verify_signed_commits.sh
+          ./scripts/verify_signed_commits.sh \
+            "${{ steps.range.outputs.base }}" \
+            "${{ steps.range.outputs.head }}"
+
+      - name: Optional cryptographic verification with trusted key
+        env:
+          COMMIT_SIGNING_PUBLIC_KEY: ${{ secrets.COMMIT_SIGNING_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COMMIT_SIGNING_PUBLIC_KEY:-}" ]; then
+            echo "No COMMIT_SIGNING_PUBLIC_KEY configured; structure-only verification active."
+            exit 0
+          fi
+          printf '%s\n' "${COMMIT_SIGNING_PUBLIC_KEY}" | gpg --batch --import
+          BASE="${{ steps.range.outputs.base }}"
+          HEAD="${{ steps.range.outputs.head }}"
+          if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            COMMITS=$(git rev-list "$HEAD")
+          else
+            COMMITS=$(git rev-list "${BASE}..${HEAD}")
+          fi
+          for c in $COMMITS; do
+            git verify-commit "$c"
+          done
