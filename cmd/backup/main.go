@@ -71,6 +71,11 @@ func main() {
 		slog.Info("organization discovered", "id", *orgID)
 	}
 
+	if err := api.ValidateOrgID(*orgID); err != nil {
+		slog.Error("invalid organization ID", "error", err)
+		os.Exit(2)
+	}
+
 	if *dryRun {
 		slog.Info("dry run successful — connection OK")
 		os.Exit(0)

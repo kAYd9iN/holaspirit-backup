@@ -14,8 +14,9 @@ import (
 var rateLimit = rate.Every(1200 * time.Millisecond)
 
 const (
-	rateBurst  = 20
-	maxRetries = 3
+	rateBurst    = 20
+	maxRetries   = 3
+	maxBodyBytes = 100 * 1024 * 1024 // 100 MiB per response — prevents memory exhaustion
 )
 
 // Client is an authenticated HTTP client for the Holaspirit API.
@@ -98,6 +99,6 @@ func (c *Client) doGet(ctx context.Context, path string) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("client error HTTP %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	return body, false, err
 }

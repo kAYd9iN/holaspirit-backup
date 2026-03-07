@@ -62,5 +62,13 @@ func (w *Writer) WriteJSON(name string, data []byte) error {
 // WriteFile sanitizes name and writes raw bytes to a file within the backup directory.
 func (w *Writer) WriteFile(name string, data []byte) error {
 	safe := sanitizeName(name)
-	return os.WriteFile(filepath.Join(w.dir, safe), data, 0600)
+	dest := filepath.Join(w.dir, safe)
+
+	// Belt-and-suspenders: verify destination is inside the backup directory.
+	rel, err := filepath.Rel(w.dir, dest)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("path traversal detected for name %q", name)
+	}
+
+	return os.WriteFile(dest, data, 0600)
 }

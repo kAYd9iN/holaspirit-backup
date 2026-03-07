@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/kAYd9iN/holaspirit-backup/internal/backup"
 )
@@ -17,7 +18,7 @@ func runVerify(dir string) int {
 		return 2
 	}
 
-	manifestPath := dir + "/backup-manifest.json"
+	manifestPath := filepath.Join(dir, "backup-manifest.json")
 	if err := backup.VerifyManifest(manifestPath, token); err != nil {
 		slog.Error("verification FAILED", "dir", dir, "error", err)
 		fmt.Fprintln(os.Stderr, "TAMPERED or invalid token — do not trust this backup.")

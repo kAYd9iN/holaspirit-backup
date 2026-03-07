@@ -4,7 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 )
+
+// validOrgID matches alphanumeric IDs with hyphens and underscores (UUIDs, numeric IDs, slugs).
+var validOrgID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-]{0,63}$`)
+
+// ValidateOrgID returns an error if orgID contains characters that could alter URL routing.
+func ValidateOrgID(orgID string) error {
+	if !validOrgID.MatchString(orgID) {
+		return fmt.Errorf("invalid organization ID %q: must be 1-64 alphanumeric chars with hyphens/underscores", orgID)
+	}
+	return nil
+}
 
 // Endpoint describes a single API resource to back up.
 type Endpoint struct {

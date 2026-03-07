@@ -17,6 +17,10 @@ type HolaspiritResponse struct {
 	} `json:"meta"`
 }
 
+// maxPages is a hard cap on the number of pages fetched per endpoint,
+// preventing unbounded loops if the API returns inconsistent pagination metadata.
+const maxPages = 500
+
 // FetchAllPages retrieves all pages for a given endpoint and returns
 // the combined data items as raw JSON messages.
 func FetchAllPages(ctx context.Context, client *Client, path string) ([]json.RawMessage, error) {
@@ -24,6 +28,10 @@ func FetchAllPages(ctx context.Context, client *Client, path string) ([]json.Raw
 	page := 1
 
 	for {
+		if page > maxPages {
+			return nil, fmt.Errorf("pagination safety limit reached (%d pages) for %s", maxPages, path)
+		}
+
 		url := fmt.Sprintf("%s?page=%d&per_page=100", path, page)
 		body, err := client.Get(ctx, url)
 		if err != nil {
