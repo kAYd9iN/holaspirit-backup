@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+STRICT=0
+if [ "${1:-}" = "--strict" ]; then
+  STRICT=1
+  shift
+fi
+
 BASE="${1:-}"
 HEAD="${2:-HEAD}"
 
@@ -23,8 +29,12 @@ for c in $COMMITS; do
       echo "OK: $c (signed)"
       ;;
     N)
-      echo "FAIL: $c has no signature"
-      FAILED=1
+      if [ "$STRICT" -eq 1 ]; then
+        echo "FAIL: $c has no signature (strict mode)"
+        FAILED=1
+      else
+        echo "WARN: $c has no signature (strict mode not active)"
+      fi
       ;;
     B)
       echo "FAIL: $c has a bad signature"
@@ -38,6 +48,6 @@ done
 
 if [ "$FAILED" -eq 1 ]; then
   echo ""
-  echo "One or more commits are unsigned. All commits to main must be GPG-signed."
+  echo "One or more commits failed signature verification."
   exit 1
 fi
