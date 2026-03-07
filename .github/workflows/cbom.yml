@@ -21,20 +21,26 @@ jobs:
           go-version: '1.26'
           cache: true
 
-      - name: Generate CBOM
+      - name: Generate SBoM
         run: |
+          # cdxgen --type cryptography produces empty results for Go projects because
+          # stdlib crypto packages (crypto/hmac, crypto/sha256 etc.) are not go.mod
+          # dependencies and are not detected via source analysis.
+          # We generate a standard Go SBoM instead: all module dependencies with
+          # PURLs, hashes, and licenses. Crypto algorithms are documented in
+          # docs/security-concept.md.
           npx --yes @cyclonedx/cdxgen@12.1.1 \
-            --type cryptography \
+            --type go \
             --output cbom.cdx.json \
             .
 
-      - name: Optional sign CBOM
+      - name: Optional sign SBoM
         env:
           CBOM_SIGNING_KEY_PEM: ${{ secrets.CBOM_SIGNING_KEY_PEM }}
         run: |
           set -euo pipefail
           if [ -z "${CBOM_SIGNING_KEY_PEM:-}" ]; then
-            echo "No CBOM_SIGNING_KEY_PEM configured; unsigned CBOM artifact only."
+            echo "No CBOM_SIGNING_KEY_PEM configured; unsigned SBoM artifact only."
             exit 0
           fi
           printf '%s\n' "${CBOM_SIGNING_KEY_PEM}" > /tmp/cbom-key.pem
@@ -44,7 +50,7 @@ jobs:
           fi
           rm -f /tmp/cbom-key.pem
 
-      - name: Upload CBOM artifacts
+      - name: Upload SBoM artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: cbom-cyclonedx
