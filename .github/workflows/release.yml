@@ -1,0 +1,101 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  actions: read
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            artifact: backup-linux-amd64
+          - goos: linux
+            goarch: arm64
+            artifact: backup-linux-arm64
+          - goos: windows
+            goarch: amd64
+            artifact: backup-windows-amd64.exe
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build \
+            -mod=vendor \
+            -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o ${{ matrix.artifact }} \
+            ./cmd/backup/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist/
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd dist/
+          sha256sum backup-linux-amd64 backup-linux-arm64 backup-windows-amd64.exe > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Generate provenance metadata (private-repo fallback)
+        run: |
+          cat > dist/provenance.json <<EOF
+          {
+            "version": "${{ github.ref_name }}",
+            "commit": "${{ github.sha }}",
+            "workflow": "${{ github.workflow }}",
+            "repository": "${{ github.repository }}",
+            "run_id": "${{ github.run_id }}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --generate-notes \
+            --title "holaspirit-backup ${{ github.ref_name }}" \
+            dist/backup-linux-amd64 \
+            dist/backup-linux-arm64 \
+            dist/backup-windows-amd64.exe \
+            dist/SHA256SUMS \
+            dist/provenance.json
