@@ -48,6 +48,11 @@ jobs:
             -o ${{ matrix.artifact }} \
             ./cmd/backup/
 
+      - name: Attest SLSA provenance (Level 2)
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-path: ${{ matrix.artifact }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -74,18 +79,20 @@ jobs:
           sha256sum backup-linux-amd64 backup-linux-arm64 backup-windows-amd64.exe > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Generate provenance metadata (private-repo fallback)
+      - name: Install cosign
+        uses: sigstore/cosign-installer@faadad0cce49287aee09b3a48701e75088a2c6ad
+
+      - name: Sign binaries with cosign (keyless / OIDC)
         run: |
-          cat > dist/provenance.json <<EOF
-          {
-            "version": "${{ github.ref_name }}",
-            "commit": "${{ github.sha }}",
-            "workflow": "${{ github.workflow }}",
-            "repository": "${{ github.repository }}",
-            "run_id": "${{ github.run_id }}",
-            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          }
-          EOF
+          for binary in \
+            dist/backup-linux-amd64 \
+            dist/backup-linux-arm64 \
+            dist/backup-windows-amd64.exe; do
+            cosign sign-blob \
+              --yes \
+              --bundle "${binary}.bundle" \
+              "${binary}"
+          done
 
       - name: Create GitHub Release
         env:
@@ -97,5 +104,7 @@ jobs:
             dist/backup-linux-amd64 \
             dist/backup-linux-arm64 \
             dist/backup-windows-amd64.exe \
-            dist/SHA256SUMS \
-            dist/provenance.json
+            dist/backup-linux-amd64.bundle \
+            dist/backup-linux-arm64.bundle \
+            dist/backup-windows-amd64.exe.bundle \
+            dist/SHA256SUMS
