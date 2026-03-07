@@ -88,12 +88,6 @@ func main() {
 		}
 	}
 
-	log.Println("Running async exports (PDF + XLSX)...")
-	exporter := backup.NewExporter(client, *orgID)
-	if err := exporter.Run(ctx, w); err != nil {
-		log.Printf("WARN: async exports failed: %v", err)
-	}
-
 	manifestPath := filepath.Join(w.Dir(), "backup-manifest.json")
 	if err := manifest.Write(manifestPath); err != nil {
 		log.Fatalf("ERROR writing manifest: %v", err)
