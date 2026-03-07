@@ -1,0 +1,63 @@
+name: api-update-check
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # every Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Skip silently if credentials are not configured
+    if: ${{ secrets.HOLASPIRIT_TOKEN != '' && vars.HOLASPIRIT_ORG_ID != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Check API schema
+        id: check
+        env:
+          HOLASPIRIT_TOKEN: ${{ secrets.HOLASPIRIT_TOKEN }}
+          HOLASPIRIT_ORG_ID: ${{ vars.HOLASPIRIT_ORG_ID }}
+        run: |
+          set +e
+          bash scripts/check-api-schema.sh
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Open issue on drift
+        if: steps.check.outputs.exit_code == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DIFF=$(cat drift.diff 2>/dev/null || echo "(diff unavailable)")
+          gh issue create \
+            --title "Holaspirit API drift detected ($(date -u +%Y-%m-%d))" \
+            --label "api-drift" \
+            --body "$(cat <<BODY
+          ## Holaspirit API drift detected
+
+          The weekly API schema check found differences between the stored baseline
+          (\`docs/api-snapshot.json\`) and the current Holaspirit API responses.
+
+          ### Diff (old → new)
+
+          \`\`\`diff
+          ${DIFF}
+          \`\`\`
+
+          ### Next steps
+
+          1. Review which fields were added or removed
+          2. Update \`internal/api/endpoints.go\` if new endpoints should be backed up
+          3. Update \`docs/api-snapshot.json\` by running \`scripts/check-api-schema.sh\` locally
+          4. Commit the updated snapshot to close this issue
+
+          _Triggered by scheduled workflow on $(date -u +%Y-%m-%dT%H:%M:%SZ)_
+          BODY
+          )"
