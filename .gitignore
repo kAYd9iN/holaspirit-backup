@@ -2,6 +2,8 @@
 holaspirit-backup
 *.exe
 
+# vendor/ is intentionally NOT ignored — checked in for supply-chain security
+
 # Backup output directory
 /backup/
 
