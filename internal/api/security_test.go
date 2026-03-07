@@ -65,8 +65,8 @@ func TestTokenNotInSlogOutput(t *testing.T) {
 
 func TestAuthorizationHeaderNotInErrors(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Echo the Authorization header back in the response body to simulate
-		// a misconfigured server that reflects headers
+		// Return a 400 to trigger the client error path. Verify the Authorization
+		// header value (token) is not included in the returned error string.
 		w.WriteHeader(http.StatusBadRequest)
 	}))
 	defer srv.Close()
