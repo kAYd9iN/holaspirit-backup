@@ -33,6 +33,9 @@ jobs:
       - name: Run tests (with race detector)
         run: go test -race -cover ./...
 
+      - name: Generate CBOM (CycloneDX cryptography BOM)
+        run: npx --yes @cyclonedx/cdxgen@latest --type cryptography --output cbom.cdx.json .
+
       - name: Build Windows binary
         run: GOOS=windows GOARCH=amd64 go build -o backup.exe ./cmd/backup/
 
@@ -43,3 +46,11 @@ jobs:
           name: backup-windows-amd64
           path: backup.exe
           retention-days: 90
+
+      - name: Upload CBOM
+        uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          name: cbom-cyclonedx
+          path: cbom.cdx.json
+          retention-days: 365
