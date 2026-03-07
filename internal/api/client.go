@@ -19,6 +19,7 @@ const (
 )
 
 // Client is an authenticated HTTP client for the Holaspirit API.
+// It only supports GET requests — no Post(), Patch(), or Delete() methods exist.
 type Client struct {
 	httpClient *http.Client
 	baseURL    string
@@ -39,13 +40,9 @@ func NewClient(baseURL, token string) *Client {
 	}
 }
 
-// BaseURL returns the base URL of the client.
-func (c *Client) BaseURL() string { return c.baseURL }
-
-// Token returns the API token.
-func (c *Client) Token() string { return c.token }
-
 // Get performs a GET request with rate limiting and retry.
+// Only retries on 429 (rate limited) and 5xx (server errors).
+// 4xx responses (except 429) fail immediately — no retry.
 func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.MaxRetries; attempt++ {
@@ -62,35 +59,44 @@ func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
 			return nil, fmt.Errorf("rate limiter: %w", err)
 		}
 
-		body, err := c.doGet(ctx, path)
+		body, retryable, err := c.doGet(ctx, path)
 		if err == nil {
 			return body, nil
+		}
+		if !retryable {
+			return nil, err
 		}
 		lastErr = err
 	}
 	return nil, fmt.Errorf("after %d retries: %w", c.MaxRetries, lastErr)
 }
 
-func (c *Client) doGet(ctx context.Context, path string) ([]byte, error) {
+// doGet performs a single GET request. Returns (body, retryable, error).
+// retryable=true for 429, 5xx, and network errors.
+// retryable=false for 4xx (except 429) — these are not transient.
+func (c *Client) doGet(ctx context.Context, path string) ([]byte, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, true, err // network errors are retryable
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return nil, fmt.Errorf("rate limited (429)")
-	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	switch {
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return nil, true, fmt.Errorf("rate limited (429)")
+	case resp.StatusCode >= 500:
+		return nil, true, fmt.Errorf("server error HTTP %d", resp.StatusCode)
+	case resp.StatusCode >= 400:
+		return nil, false, fmt.Errorf("client error HTTP %d", resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	return body, false, err
 }
