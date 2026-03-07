@@ -1,17 +1,18 @@
-package backup_test
+package backup
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/kAYd9iN/holaspirit-backup/internal/api"
-	"github.com/kAYd9iN/holaspirit-backup/internal/backup"
 	"github.com/kAYd9iN/holaspirit-backup/internal/storage"
 )
 
@@ -43,7 +44,7 @@ func TestRunner_FetchesAllEndpoints(t *testing.T) {
 		{Name: "roles", Path: "/api/organizations/org1/roles", Paginated: true},
 	}
 
-	results := backup.RunFetchers(context.Background(), client, w, endpoints)
+	results := RunFetchers(context.Background(), client, w, endpoints)
 
 	for _, r := range results {
 		fetched[r.Name] = r.Err == nil
@@ -55,5 +56,57 @@ func TestRunner_FetchesAllEndpoints(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(w.Dir(), "circles.json")); os.IsNotExist(err) {
 		t.Error("circles.json not created")
+	}
+}
+
+func TestRunFetchersMaxConcurrency(t *testing.T) {
+	var mu sync.Mutex
+	var peak, current int
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		current++
+		if current > peak {
+			peak = current
+		}
+		mu.Unlock()
+
+		time.Sleep(20 * time.Millisecond)
+
+		mu.Lock()
+		current--
+		mu.Unlock()
+
+		w.Write([]byte(`{"data":[],"meta":{}}`))
+	}))
+	defer srv.Close()
+
+	// 20 endpoints to saturate the pool
+	endpoints := make([]api.Endpoint, 20)
+	for i := range endpoints {
+		endpoints[i] = api.Endpoint{
+			Name:      fmt.Sprintf("ep%d", i),
+			Path:      "/api/test",
+			Paginated: false,
+		}
+	}
+
+	client := api.NewClient(srv.URL, "tok")
+	client.MaxRetries = 0
+	client.RetryDelay = 0
+
+	dir := t.TempDir()
+	w, err := storage.NewWriter(dir, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	RunFetchers(context.Background(), client, w, endpoints)
+
+	if peak > workerCount {
+		t.Errorf("peak concurrency %d exceeded workerCount %d", peak, workerCount)
+	}
+	if peak == 0 {
+		t.Error("no requests were made")
 	}
 }
