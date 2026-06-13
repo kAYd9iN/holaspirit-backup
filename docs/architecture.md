@@ -122,8 +122,8 @@ backup/
     members.json
     policies.json
     meetings.json
-    objectives.json
-    keyresults.json
+    okrs.json
+    node-okrs.json
     tasks.json
     boards.json
     columns.json

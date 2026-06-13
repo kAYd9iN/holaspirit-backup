@@ -37,8 +37,10 @@ func AllEndpoints(orgID string) []Endpoint {
 		{Name: "tensions", Path: base + "/tensions", Paginated: true},
 		{Name: "policies", Path: base + "/policies", Paginated: true},
 		{Name: "meetings", Path: base + "/meetings", Paginated: true},
-		{Name: "objectives", Path: base + "/objectives", Paginated: true},
-		{Name: "keyresults", Path: base + "/keyresults", Paginated: true},
+		// objectives/keyresults were removed from the published API —
+		// replaced by the OKR endpoints (key results are nested in OKRs).
+		{Name: "okrs", Path: base + "/okrs", Paginated: true},
+		{Name: "node-okrs", Path: base + "/node-okrs", Paginated: true},
 		{Name: "tasks", Path: base + "/tasks", Paginated: true},
 		{Name: "boards", Path: base + "/boards", Paginated: true},
 		{Name: "columns", Path: base + "/columns", Paginated: true},
