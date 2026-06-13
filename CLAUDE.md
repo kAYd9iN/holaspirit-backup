@@ -50,7 +50,29 @@ go build -o backup ./cmd/backup
 | `scorecard.yml` | push main + weekly | OpenSSF Scorecard (needs `SCORECARD_ENABLED=true` var + `SCORECARD_TOKEN` secret) |
 | `commit-signature.yml` | push + PR | GPG commit check (needs `COMMIT_SIGNING_ENABLED=true` var + `COMMIT_SIGNING_PUBLIC_KEY` secret) |
 | `dependency-review.yml` | PR only | Block high-severity CVEs |
-| `api-update-check.yml` | weekly Monday | Detect Holaspirit API field changes, open issue if drift |
+| `api-update-check.yml` | daily 06:00 UTC | Spec-based drift detection → Claude adapts code → api-drift PR |
+| `auto-release.yml` | api-drift PR merged | Bump 0ver minor, push tag → triggers release |
+
+## Self-Update Loop (API drift)
+
+```
+api-update-check (daily 06:00 UTC — no credentials needed)
+  → compares Holaspirit's PUBLISHED OpenAPI spec (embedded in the public
+    /api/doc/ page) against docs/api-snapshot.json
+  → drift detected → Claude adapts internal/api/endpoints.go
+    (needs ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)
+  → PR with label api-drift (auto-merge only if snapshot-only;
+    Go/script changes always require human review — prompt-injection guard)
+  → merge → auto-release bumps 0ver minor + pushes tag
+  → release workflow: security-gate (govulncheck, gosec, race tests,
+    blocks while issues labeled `security` are open) → build → signed release
+```
+
+- Baseline: `docs/api-snapshot.json` (committed); sentinel `__ENDPOINT_MISSING__`
+  marks endpoints the tool calls that are no longer documented
+- NOTE: releases are blocked until the open security review findings
+  (issues #9–#33, labels `security`/`severity:*`) are resolved — by design
+- Exit 2 (spec download failed) fails the job; no snapshot is written
 
 ## Repo
 
@@ -60,9 +82,15 @@ go build -o backup ./cmd/backup
 
 ## Pending Manual Steps
 
-- Set `SCORECARD_TOKEN` secret (PAT with `repo` + `read:org`)
+- Set `SCORECARD_TOKEN` secret (optional — only improves Branch-Protection check)
 - Set `COMMIT_SIGNING_PUBLIC_KEY` secret (GPG public key)
-- Set `HOLASPIRIT_TOKEN` + `HOLASPIRIT_ORG_ID` secrets for api-update-check workflow
+- Set `ANTHROPIC_API_KEY` secret **or** `CLAUDE_CODE_OAUTH_TOKEN` secret (Pro/Max
+  subscription via `claude setup-token`) — enables automatic code adaptation on drift
+- Set `REPO_PAT` secret (PAT with repo + workflow scope — lets drift PRs trigger CI
+  and auto-release tags trigger the release workflow)
+- Resolve open security findings #9–#33 (release security-gate blocks until then)
+- HOLASPIRIT_TOKEN / HOLASPIRIT_ORG_ID are **no longer needed** for the drift
+  check (it now reads the public OpenAPI spec)
 
 ## Confluence (HB Space, cloudId: 78b5b3f6-a4c9-4f9d-856e-56eca016288c)
 

@@ -1,119 +1,162 @@
 #!/usr/bin/env bash
 # check-api-schema.sh
 #
-# Hits all 21 Holaspirit endpoints and extracts the top-level JSON field names
-# for each. Writes the result to docs/api-snapshot.json.
+# Compares Holaspirit's *published* OpenAPI spec against the stored baseline
+# (docs/api-snapshot.json). The spec is embedded in the public API doc page
+# (https://app.holaspirit.com/api/doc/), so no token, organization, or other
+# credentials are required — the check runs entirely against public docs.
 #
-# Usage (local):
-#   HOLASPIRIT_TOKEN=<token> HOLASPIRIT_ORG_ID=<org> ./scripts/check-api-schema.sh
+# Tracked: every endpoint the tool actually calls (see internal/api/endpoints.go).
+# Sentinel values in the snapshot:
+#   __ENDPOINT_MISSING__   — endpoint no longer documented (removed/deprecated)
+#   __SCHEMA_UNPARSEABLE__ — response schema shape changed beyond recognition
 #
-# In CI the script is called the same way; HOLASPIRIT_TOKEN and HOLASPIRIT_ORG_ID
-# come from repository secrets / variables.
+# Usage (local): ./scripts/check-api-schema.sh
 #
 # Exit codes:
-#   0 — no drift (or snapshot just created)
-#   1 — drift detected (CI should open an issue)
+#   0 — no drift (or baseline just created)
+#   1 — drift detected (CI opens a PR)
+#   2 — spec download/extraction failed — no snapshot written
 
 set -euo pipefail
 
-TOKEN="${HOLASPIRIT_TOKEN:?HOLASPIRIT_TOKEN must be set}"
-ORG_ID="${HOLASPIRIT_ORG_ID:?HOLASPIRIT_ORG_ID must be set}"
-BASE="https://app.holaspirit.com/api/organizations/${ORG_ID}"
 SNAPSHOT="docs/api-snapshot.json"
-TMPFILE="$(mktemp)"
-trap 'rm -f "$TMPFILE"' EXIT
+UA="holaspirit-backup-api-check (+https://github.com/kAYd9iN/holaspirit-backup)"
+DOC_URL="https://app.holaspirit.com/api/doc/"
 
-fetch_keys() {
-  local path="$1"
-  local url
-  if [[ "$path" == /api/organizations/${ORG_ID} ]]; then
-    url="https://app.holaspirit.com${path}"
-  else
-    url="${BASE}${path#/api/organizations/${ORG_ID}}"
-  fi
+# Pick a python that actually runs (on Windows, `python3` may resolve to the
+# Microsoft Store alias stub, which only prints an install hint).
+PYTHON=""
+for candidate in python3 python; do
+  if "$candidate" -c "pass" >/dev/null 2>&1; then PYTHON="$candidate"; break; fi
+done
+[[ -n "$PYTHON" ]] || { echo "ERROR: no working python3 found" >&2; exit 2; }
 
-  local response
-  response=$(curl -sf \
-    -H "Authorization: Bearer ${TOKEN}" \
-    -H "Accept: application/json" \
-    --max-time 15 \
-    "$url") || { echo "WARN: $url returned error — skipping" >&2; echo "[]"; return; }
+WORKDIR="$(mktemp -d)"
+trap 'rm -rf "$WORKDIR"' EXIT
 
-  # Paginated responses have a "data" array; non-paginated are plain objects.
-  # Extract keys from the first item of "data", or top-level keys otherwise.
-  echo "$response" | jq -r '
-    if .data | type == "array" and length > 0 then
-      .data[0] | keys
-    elif .data | type == "object" then
-      .data | keys
-    else
-      keys
-    end
-  ' 2>/dev/null || echo "[]"
+echo "Fetching published Holaspirit API documentation..." >&2
+curl -sfL -A "$UA" --max-time 60 "$DOC_URL" -o "$WORKDIR/doc.html" \
+  || { echo "ERROR: failed to download API doc page ($DOC_URL)" >&2; exit 2; }
+
+"$PYTHON" - "$WORKDIR/doc.html" > "$WORKDIR/snapshot.json" <<'PY'
+import json, sys, datetime
+
+html = open(sys.argv[1], encoding="utf-8").read()
+
+# The OpenAPI spec is embedded in the Swagger UI bootstrap: `spec: {...}`.
+# Extract it with a string-aware balanced-brace scan.
+marker = html.find("spec: {")
+if marker < 0:
+    sys.stderr.write("ERROR: embedded OpenAPI spec not found in doc page\n")
+    sys.exit(2)
+start = html.find("{", marker)
+depth, in_str, esc, end = 0, False, False, -1
+for j in range(start, len(html)):
+    c = html[j]
+    if in_str:
+        if esc:
+            esc = False
+        elif c == "\\":
+            esc = True
+        elif c == '"':
+            in_str = False
+    else:
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                end = j
+                break
+if end < 0:
+    sys.stderr.write("ERROR: could not find end of embedded spec\n")
+    sys.exit(2)
+spec = json.loads(html[start:end + 1])
+
+def deref(obj, depth=0):
+    while isinstance(obj, dict) and "$ref" in obj and depth < 30:
+        target = spec
+        for part in obj["$ref"].lstrip("#/").split("/"):
+            target = target[part]
+        obj = target
+        depth += 1
+    return obj
+
+def props_of(schema, depth=0):
+    """Resolve a schema to its property map, merging allOf members."""
+    if depth > 10:
+        return {}
+    schema = deref(schema)
+    props = dict(schema.get("properties", {}))
+    for member in schema.get("allOf", []):
+        props.update(props_of(member, depth + 1))
+    return props
+
+def fields(path):
+    item = spec.get("paths", {}).get(path)
+    if not item or "get" not in item:
+        return ["__ENDPOINT_MISSING__"]
+    try:
+        schema = item["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        props = props_of(schema)
+        # Holaspirit responses wrap payloads: {data: [...]|{...}, linked, meta, pagination}
+        if "data" in props:
+            data = deref(props["data"])
+            if data.get("type") == "array":
+                props = props_of(data.get("items", {}))
+            else:
+                props = props_of(data)
+        return sorted(props.keys()) or ["__SCHEMA_UNPARSEABLE__"]
+    except (KeyError, TypeError):
+        return ["__SCHEMA_UNPARSEABLE__"]
+
+# Every endpoint internal/api/endpoints.go calls, mapped to its spec path.
+BASE = "/api/organizations/{organization_id}"
+NAMES = [
+    "organization", "circles", "circles-timespent", "roles", "members",
+    "tensions", "policies", "meetings", "okrs", "node-okrs", "tasks",
+    "boards", "columns", "checklists", "metrics", "publications",
+    "categories", "attachments", "chartviews", "calendars", "backups",
+]
+endpoints = {
+    name: fields(BASE if name == "organization" else f"{BASE}/{name}")
+    for name in sorted(NAMES)
 }
 
-declare -A PATHS=(
-  [organization]="/api/organizations/${ORG_ID}"
-  [circles]="${BASE}/circles"
-  [circles-timespent]="${BASE}/circles-timespent"
-  [roles]="${BASE}/roles"
-  [members]="${BASE}/members"
-  [tensions]="${BASE}/tensions"
-  [policies]="${BASE}/policies"
-  [meetings]="${BASE}/meetings"
-  [objectives]="${BASE}/objectives"
-  [keyresults]="${BASE}/keyresults"
-  [tasks]="${BASE}/tasks"
-  [boards]="${BASE}/boards"
-  [columns]="${BASE}/columns"
-  [checklists]="${BASE}/checklists"
-  [metrics]="${BASE}/metrics"
-  [publications]="${BASE}/publications"
-  [categories]="${BASE}/categories"
-  [attachments]="${BASE}/attachments"
-  [chartviews]="${BASE}/chartviews"
-  [calendars]="${BASE}/calendars"
-  [backups]="${BASE}/backups"
-)
-
-echo "Fetching API schema from Holaspirit..." >&2
-
-# Build JSON object: { "generated": "...", "endpoints": { "name": [...keys] } }
-ENDPOINTS_JSON="{}"
-for name in "${!PATHS[@]}"; do
-  keys=$(fetch_keys "${PATHS[$name]}")
-  ENDPOINTS_JSON=$(echo "$ENDPOINTS_JSON" | jq --arg n "$name" --argjson k "$keys" '.[$n] = $k')
-  echo "  $name: $(echo "$keys" | jq -r 'length') fields" >&2
-done
-
-# Sort endpoint names for deterministic output
-NEW_SNAPSHOT=$(jq -n \
-  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  --argjson ep "$ENDPOINTS_JSON" \
-  '{"generated": $ts, "endpoints": $ep | to_entries | sort_by(.key) | from_entries}')
-
-echo "$NEW_SNAPSHOT" > "$TMPFILE"
+print(json.dumps({
+    "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "sources": {
+        "doc": {"url": "app.holaspirit.com/api/doc/", "version": spec.get("info", {}).get("version", "?")},
+    },
+    "endpoints": endpoints,
+}, indent=2))
+PY
 
 if [[ ! -f "$SNAPSHOT" ]]; then
-  cp "$TMPFILE" "$SNAPSHOT"
+  cp "$WORKDIR/snapshot.json" "$SNAPSHOT"
   echo "Snapshot created at $SNAPSHOT — no baseline existed yet." >&2
   exit 0
 fi
 
-# Compare only the "endpoints" part (ignore "generated" timestamp)
-OLD_EP=$(jq '.endpoints' "$SNAPSHOT")
-NEW_EP=$(jq '.endpoints' "$TMPFILE")
+extract_endpoints() {
+  "$PYTHON" -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding='utf-8'))['endpoints'], indent=2, sort_keys=True))" "$1"
+}
+OLD_EP=$(extract_endpoints "$SNAPSHOT")
+NEW_EP=$(extract_endpoints "$WORKDIR/snapshot.json")
 
 if [[ "$OLD_EP" == "$NEW_EP" ]]; then
   echo "No API drift detected." >&2
   exit 0
 fi
 
-# Drift detected — print diff and exit 1 so CI can open an issue
 echo "API DRIFT DETECTED:" >&2
-diff <(echo "$OLD_EP" | jq -S .) <(echo "$NEW_EP" | jq -S .) >&2 || true
+diff <(echo "$OLD_EP") <(echo "$NEW_EP") >&2 || true
+diff <(echo "$OLD_EP") <(echo "$NEW_EP") > drift.diff || true
 
-# Write the diff to a file so the CI workflow can use it in the issue body
-diff <(echo "$OLD_EP" | jq -S .) <(echo "$NEW_EP" | jq -S .) > drift.diff || true
+# Update the snapshot in place — CI commits it as part of the drift PR.
+cp "$WORKDIR/snapshot.json" "$SNAPSHOT"
 
 exit 1

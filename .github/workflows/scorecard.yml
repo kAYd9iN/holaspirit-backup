@@ -32,7 +32,9 @@ jobs:
           results_file: scorecard-results.sarif
           results_format: sarif
           publish_results: false
-          repo_token: ${{ secrets.SCORECARD_TOKEN }}
+          # SCORECARD_TOKEN (PAT) only improves the Branch-Protection check;
+          # all other checks work with the default token on public repos.
+          repo_token: ${{ secrets.SCORECARD_TOKEN || github.token }}
 
       - name: Upload SARIF to GitHub Security tab
         uses: github/codeql-action/upload-sarif@820e3160e279568db735cee8ed8f8e77a6da7818  # v3 (2026-03-06)
