@@ -148,6 +148,22 @@ tool issue:
 5. **Review** — confirm the at-rest mitigations above were in place; adjust
    retention and access controls to reduce the exposed corpus next time.
 
+## Cryptography Bill of Materials (CBOM)
+
+The tool's cryptographic surface is enumerated in a CycloneDX 1.6 CBOM at
+[`docs/cbom.cdx.json`](docs/cbom.cdx.json): SHA-256 (hashing), HMAC-SHA-256
+(manifest signature), TLS ≥ 1.2 (transport), and ECDSA P-256 (cosign release
+signing). Automated scanners do not detect Go stdlib crypto, so the CBOM is
+hand-authored and kept honest by `scripts/check-cbom.sh`, which fails CI if a
+crypto import is not declared in it.
+
+The CBOM is checked against a **NIST SP 800-131A / FIPS-approved** policy
+([`policy/nist-crypto.rego`](policy/nist-crypto.rego), Open Policy Agent /
+conftest). A non-approved algorithm (e.g. MD5, SHA-1, RC4, or TLS < 1.2) fails
+the **release security gate** and blocks the release. Quantum-readiness is
+reported as a non-gating warning: ECDSA P-256 is NIST-approved but not
+quantum-safe, tracked for future post-quantum migration.
+
 ## Organization ID disclosure
 
 The organization ID is stored in the manifest and (after validation) logged.
