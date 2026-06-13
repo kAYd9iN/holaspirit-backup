@@ -120,3 +120,68 @@ func TestManifestTokenNotInOutput(t *testing.T) {
 		t.Error("token substring found in manifest.sig")
 	}
 }
+
+func TestVerifyManifest_RejectsMalformedSignature(t *testing.T) {
+	dir := t.TempDir()
+	mPath := filepath.Join(dir, "backup-manifest.json")
+	if err := os.WriteFile(mPath, []byte(`{"files":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// .sig with non-hex content must yield a clear "malformed" error, not a
+	// silent "tampered" verdict (issue #13).
+	if err := os.WriteFile(filepath.Join(dir, "backup-manifest.sig"), []byte("not-hex-!!"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := backup.VerifyManifest(mPath, "tok")
+	if err == nil || !strings.Contains(err.Error(), "malformed signature") {
+		t.Errorf("expected malformed-signature error, got: %v", err)
+	}
+}
+
+func TestVerifyManifest_ToleratesTrailingNewlineInSig(t *testing.T) {
+	dir := t.TempDir()
+	m := backup.NewManifest("org", "test", time.Now())
+	mPath := filepath.Join(dir, "backup-manifest.json")
+	if err := m.Write(mPath, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	// Append a trailing newline to the .sig — a common artifact of text tools.
+	sigPath := filepath.Join(dir, "backup-manifest.sig")
+	sig, _ := os.ReadFile(sigPath)
+	if err := os.WriteFile(sigPath, append(sig, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := backup.VerifyManifest(mPath, "tok"); err != nil {
+		t.Errorf("trailing newline in sig should still verify, got: %v", err)
+	}
+}
+
+func TestAddFailedFile_SanitizesControlChars(t *testing.T) {
+	dir := t.TempDir()
+	m := backup.NewManifest("org", "test", time.Now())
+	m.AddFailedFile("evil", fmtErr("line1\nFAKE: injected\x1b[31m"))
+	mPath := filepath.Join(dir, "backup-manifest.json")
+	if err := m.Write(mPath, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(mPath)
+	// The stored error must not contain raw newlines or escape bytes (issue #15/#18).
+	var parsed struct {
+		Files []struct {
+			Error string `json:"error"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Files) != 1 {
+		t.Fatalf("expected 1 file entry, got %d", len(parsed.Files))
+	}
+	if strings.ContainsAny(parsed.Files[0].Error, "\n\x1b\x00") {
+		t.Errorf("error string not sanitized: %q", parsed.Files[0].Error)
+	}
+}
+
+type fmtErr string
+
+func (e fmtErr) Error() string { return string(e) }

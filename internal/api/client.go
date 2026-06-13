@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,8 +32,22 @@ type Client struct {
 }
 
 func NewClient(baseURL, token string) *Client {
+	// Explicit TLS policy (issues #12, #29): pin a minimum of TLS 1.2 and make
+	// it impossible to silently ship with certificate verification disabled.
+	// InsecureSkipVerify is hard-set to false so a future custom transport edit
+	// can't accidentally turn it off; the Bearer token must never traverse an
+	// unverified connection.
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: false,
+		},
+	}
 	return &Client{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: transport,
+		},
 		baseURL:    baseURL,
 		token:      token,
 		limiter:    rate.NewLimiter(rateLimit, rateBurst),

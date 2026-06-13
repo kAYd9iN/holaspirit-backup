@@ -9,9 +9,34 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// maxManifestFileBytes caps how much of a backup file is read for hashing,
+// so an unexpectedly large file cannot exhaust memory (issue #14). It matches
+// the client's per-response body limit.
+const maxManifestFileBytes = 100 * 1024 * 1024 // 100 MiB
+
+// errorSanitizer strips ASCII control characters and ANSI escapes from error
+// strings before they are stored in the manifest, preventing log/JSON injection
+// and reducing the chance of leaking unexpected response content (issue #15).
+var errorSanitizer = regexp.MustCompile(`[\x00-\x1f\x7f]|\x1b\[[0-9;]*[a-zA-Z]`)
+
+// sanitizeError makes an error string safe to persist: control characters are
+// replaced and the message is truncated to a sane length.
+func sanitizeError(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := errorSanitizer.ReplaceAllString(err.Error(), "?")
+	const maxLen = 512
+	if len(s) > maxLen {
+		s = s[:maxLen] + "…(truncated)"
+	}
+	return s
+}
 
 // FileEntry records integrity data for one backup file.
 type FileEntry struct {
@@ -29,11 +54,21 @@ type Summary struct {
 	Failed     int `json:"failed"`
 }
 
+// AuditInfo records who ran a backup and from where. It is populated only when
+// the operator opts in via --audit (issue #33); it is omitted by default to
+// avoid embedding host/user identifiers in every backup (issue #28).
+type AuditInfo struct {
+	Hostname string `json:"hostname,omitempty"`
+	User     string `json:"user,omitempty"`
+	Automated bool  `json:"automated,omitempty"`
+}
+
 // Manifest records the full backup run metadata and per-file integrity hashes.
 type Manifest struct {
 	Timestamp      time.Time   `json:"timestamp"`
 	ToolVersion    string      `json:"tool_version"`
 	OrganizationID string      `json:"organization_id"`
+	Audit          *AuditInfo  `json:"audit,omitempty"`
 	Files          []FileEntry `json:"files"`
 	Summary        Summary     `json:"summary"`
 }
@@ -46,6 +81,11 @@ func NewManifest(orgID, version string, ts time.Time) *Manifest {
 	}
 }
 
+// SetAudit attaches optional audit metadata (issue #33). No-op for nil.
+func (m *Manifest) SetAudit(a *AuditInfo) {
+	m.Audit = a
+}
+
 // AddFile hashes the file at path and records it as a successful entry.
 func (m *Manifest) AddFile(path string) error {
 	f, err := os.Open(path) // #nosec G304 — path is always an internally constructed backup path
@@ -55,7 +95,7 @@ func (m *Manifest) AddFile(path string) error {
 	defer f.Close()
 
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.Copy(h, io.LimitReader(f, maxManifestFileBytes)); err != nil {
 		return fmt.Errorf("hash %s: %w", path, err)
 	}
 
@@ -72,7 +112,7 @@ func (m *Manifest) AddFailedFile(name string, err error) {
 	m.Files = append(m.Files, FileEntry{
 		Name:   name + ".json",
 		Status: "failed",
-		Error:  err.Error(),
+		Error:  sanitizeError(err),
 	})
 }
 
@@ -116,8 +156,20 @@ func VerifyManifest(manifestPath, token string) error {
 		return fmt.Errorf("read sig: %w", err)
 	}
 
-	expected := computeHMAC(data, token)
-	if !hmac.Equal([]byte(expected), sigBytes) {
+	// Compare the raw HMAC bytes, not the hex strings (issue #13). Decoding
+	// first means a stray trailing newline or whitespace in the .sig file
+	// yields a clear "malformed signature" error instead of a misleading
+	// "tampered" verdict, and the constant-time compare operates on the
+	// actual MAC bytes.
+	expectedBytes, err := hex.DecodeString(computeHMAC(data, token))
+	if err != nil {
+		return fmt.Errorf("compute expected signature: %w", err)
+	}
+	storedBytes, err := hex.DecodeString(strings.TrimSpace(string(sigBytes)))
+	if err != nil {
+		return fmt.Errorf("malformed signature file (%s): not valid hex", sigPath)
+	}
+	if !hmac.Equal(expectedBytes, storedBytes) {
 		return fmt.Errorf("manifest signature mismatch — backup may have been tampered with")
 	}
 	return nil

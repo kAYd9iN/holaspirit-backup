@@ -68,6 +68,7 @@ Optionen:
   --org-id ID       Organisations-ID (auto-detected)
   --dry-run         Verbindung testen ohne Daten zu schreiben
   --timeout MIN     Gesamt-Timeout in Minuten (Standard: 120)
+  --audit           Hostname + Benutzer im Manifest erfassen (Audit-Trail)
   --version         Version anzeigen
 ```
 

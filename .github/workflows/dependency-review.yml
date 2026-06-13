@@ -1,8 +1,14 @@
 name: dependency-review
 
+# Issue #26: the dependency-review action is inherently diff-based and only
+# runs on pull requests / merge groups. Direct pushes to `main` (which would
+# bypass it) are prevented by the `main-protection` ruleset, which requires
+# every change to land via a reviewed PR. govulncheck in security.yml runs on
+# every push as a post-merge backstop.
 on:
   pull_request:
     branches: [main]
+  merge_group:
 
 permissions:
   contents: read
@@ -20,3 +26,7 @@ jobs:
         with:
           fail-on-severity: high
           comment-summary-in-pr: always
+          # License compliance gate (issue #24): only permissive licenses are
+          # allowed for new/updated dependencies. A GPL/AGPL dependency would
+          # fail the check before it can be merged.
+          allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC
