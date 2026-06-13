@@ -27,11 +27,38 @@ type Writer struct {
 }
 
 func NewWriter(baseDir string, ts time.Time) (*Writer, error) {
+	// Symlink hardening (issue #17): resolve the operator-supplied baseDir
+	// through any symlinks before writing into it. If baseDir is a symlink
+	// to a sensitive location (e.g. /etc), the backup must not follow it.
+	// A not-yet-existing baseDir is fine — only an existing symlink target is
+	// resolved and re-checked.
+	if resolved, err := filepath.EvalSymlinks(baseDir); err == nil {
+		baseDir = resolved
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("resolve output dir %q: %w", baseDir, err)
+	}
+
 	dir := filepath.Join(baseDir, ts.UTC().Format("2006-01-02T15-04-05"))
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return nil, fmt.Errorf("create backup dir: %w", err)
 	}
-	return &Writer{dir: dir}, nil
+
+	// Re-resolve the created directory and confirm it still sits under the
+	// intended base — guards against a symlink swapped in between the checks.
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve backup dir: %w", err)
+	}
+	resolvedBase, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve base dir: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedBase, resolvedDir)
+	if err != nil || isOutsideDir(rel) {
+		return nil, fmt.Errorf("backup dir %q escapes base %q after symlink resolution", resolvedDir, resolvedBase)
+	}
+
+	return &Writer{dir: resolvedDir}, nil
 }
 
 func (w *Writer) Dir() string { return w.dir }

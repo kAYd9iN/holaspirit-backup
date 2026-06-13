@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/user"
 	"path/filepath"
 	"time"
 
@@ -13,6 +14,19 @@ import (
 	"github.com/kAYd9iN/holaspirit-backup/internal/backup"
 	"github.com/kAYd9iN/holaspirit-backup/internal/storage"
 )
+
+// auditInfo collects host and user identity for the optional --audit trail.
+// CI=true (set by GitHub Actions and most CI systems) marks the run automated.
+func auditInfo() *backup.AuditInfo {
+	a := &backup.AuditInfo{Automated: os.Getenv("CI") != ""}
+	if h, err := os.Hostname(); err == nil {
+		a.Hostname = h
+	}
+	if u, err := user.Current(); err == nil {
+		a.User = u.Username
+	}
+	return a
+}
 
 // version is set at build time via -ldflags "-X main.version=vX.Y.Z"
 var version = "dev"
@@ -38,6 +52,7 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "Test connection without writing files")
 	showVer := flag.Bool("version", false, "Show version and exit")
 	timeoutMin := flag.Int("timeout", 120, "Overall timeout in minutes (0 = no timeout)")
+	audit := flag.Bool("audit", false, "Record hostname and username in the manifest (audit trail)")
 	flag.Parse()
 
 	if *showVer {
@@ -68,13 +83,16 @@ func main() {
 			os.Exit(2)
 		}
 		*orgID = id
-		slog.Info("organization discovered", "id", *orgID)
 	}
 
+	// Validate BEFORE logging the org ID (issue #18): the value may come from
+	// an API response, so it is sanitized and format-checked before it ever
+	// reaches a log line.
 	if err := api.ValidateOrgID(*orgID); err != nil {
 		slog.Error("invalid organization ID", "error", err)
 		os.Exit(2)
 	}
+	slog.Info("organization confirmed", "id", sanitizeLog(*orgID))
 
 	if *dryRun {
 		slog.Info("dry run successful — connection OK")
@@ -93,19 +111,25 @@ func main() {
 	slog.Info("fetching endpoints", "count", len(endpoints))
 
 	manifest := backup.NewManifest(*orgID, version, ts)
+	if *audit {
+		manifest.SetAudit(auditInfo())
+	}
 	results := backup.RunFetchers(ctx, client, w, endpoints)
 
 	exitCode := 0
 	for _, r := range results {
+		// Endpoint names are compile-time constants, but they are sanitized
+		// before logging as defense-in-depth against log injection (issue #18).
+		safeName := sanitizeLog(r.Name)
 		if r.Err != nil {
-			slog.Warn("endpoint failed", "name", r.Name, "error", r.Err)
+			slog.Warn("endpoint failed", "name", safeName, "error", sanitizeLog(r.Err.Error()))
 			manifest.AddFailedFile(r.Name, r.Err)
 			exitCode = 1
 		} else {
-			slog.Info("endpoint ok", "name", r.Name, "records", r.Records)
+			slog.Info("endpoint ok", "name", safeName, "records", r.Records)
 			filePath := filepath.Join(w.Dir(), r.Name+".json")
 			if err := manifest.AddFile(filePath); err != nil {
-				slog.Warn("manifest hash failed", "name", r.Name, "error", err)
+				slog.Warn("manifest hash failed", "name", safeName, "error", sanitizeLog(err.Error()))
 			}
 		}
 	}

@@ -31,6 +31,11 @@ func RunFetchers(ctx context.Context, client *api.Client, w *storage.Writer, end
 	results := make([]Result, len(endpoints))
 	var wg sync.WaitGroup
 
+	// Concurrency safety (issue #16): each job carries a unique index and every
+	// worker writes only to results[job.idx]; no two goroutines ever touch the
+	// same element, so the writes do not race under the Go memory model. The
+	// slice is read only after wg.Wait() establishes happens-before ordering.
+	// The -race detector in CI guards this invariant against future refactors.
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {

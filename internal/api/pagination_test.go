@@ -88,3 +88,27 @@ func TestFetchAllPages_EmptyResponse(t *testing.T) {
 		t.Errorf("expected 0 items, got %d", len(items))
 	}
 }
+
+func TestFetchAllPages_EncodesQueryParams(t *testing.T) {
+	var gotQueries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQueries = append(gotQueries, r.URL.RawQuery)
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"id": "1"}},
+			"meta": map[string]any{"pagination": map[string]any{"current_page": 1, "total_pages": 1}},
+		})
+	}))
+	defer srv.Close()
+
+	c := api.NewClient(srv.URL, "tok")
+	if _, err := api.FetchAllPages(context.Background(), c, "/circles"); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotQueries) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(gotQueries))
+	}
+	// url.Values.Encode sorts keys alphabetically: page before per_page.
+	if gotQueries[0] != "page=1&per_page=100" {
+		t.Errorf("unexpected encoded query: %q", gotQueries[0])
+	}
+}
