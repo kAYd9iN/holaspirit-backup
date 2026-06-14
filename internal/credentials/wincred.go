@@ -24,5 +24,5 @@ func (w *WinCredManager) GetToken() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("credential %q not found in Windows Credential Manager: %w", w.name, err)
 	}
-	return string(cred.CredentialBlob), nil
+	return decodeCredentialBlob(cred.CredentialBlob), nil
 }
