@@ -111,6 +111,7 @@ func main() {
 	slog.Info("fetching endpoints", "count", len(endpoints))
 
 	manifest := backup.NewManifest(*orgID, version, ts)
+	manifest.Root = w.Dir() // record file names relative to the backup root (verify re-hashes them)
 	if *audit {
 		manifest.SetAudit(auditInfo())
 	}

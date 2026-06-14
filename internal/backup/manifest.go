@@ -65,12 +65,41 @@ type AuditInfo struct {
 
 // Manifest records the full backup run metadata and per-file integrity hashes.
 type Manifest struct {
+	Root           string      `json:"-"` // backup dir root; file names are stored relative to it
 	Timestamp      time.Time   `json:"timestamp"`
 	ToolVersion    string      `json:"tool_version"`
 	OrganizationID string      `json:"organization_id"`
 	Audit          *AuditInfo  `json:"audit,omitempty"`
 	Files          []FileEntry `json:"files"`
 	Summary        Summary     `json:"summary"`
+}
+
+// hashFile returns the lowercase hex SHA-256 of the file at path, capped at
+// maxManifestFileBytes (issue #14). The same helper is used when building the
+// manifest and when verifying it, so the two can never compute it differently.
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path) // #nosec G304 -- internally constructed backup path / manifest-listed file
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, io.LimitReader(f, maxManifestFileBytes)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// manifestName returns the file name to record: relative to the backup root
+// (forward-slashed) so each entry maps to a unique file and can be re-hashed
+// during verify. Falls back to the base name when no root is set.
+func (m *Manifest) manifestName(path string) string {
+	if m.Root != "" {
+		if rel, err := filepath.Rel(m.Root, path); err == nil {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return filepath.Base(path)
 }
 
 func NewManifest(orgID, version string, ts time.Time) *Manifest {
@@ -88,20 +117,13 @@ func (m *Manifest) SetAudit(a *AuditInfo) {
 
 // AddFile hashes the file at path and records it as a successful entry.
 func (m *Manifest) AddFile(path string) error {
-	f, err := os.Open(path) // #nosec G304 — path is always an internally constructed backup path
+	sum, err := hashFile(path)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, io.LimitReader(f, maxManifestFileBytes)); err != nil {
 		return fmt.Errorf("hash %s: %w", path, err)
 	}
-
 	m.Files = append(m.Files, FileEntry{
-		Name:   filepath.Base(path),
-		SHA256: hex.EncodeToString(h.Sum(nil)),
+		Name:   m.manifestName(path),
+		SHA256: sum,
 		Status: "ok",
 	})
 	return nil
@@ -171,6 +193,28 @@ func VerifyManifest(manifestPath, token string) error {
 	}
 	if !hmac.Equal(expectedBytes, storedBytes) {
 		return fmt.Errorf("manifest signature mismatch — backup may have been tampered with")
+	}
+
+	// Manifest is authentic; now confirm the backup files still match it
+	// (the per-file SHA-256 are only meaningful if they are actually checked).
+	var parsed struct {
+		Files []FileEntry `json:"files"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return fmt.Errorf("parse manifest: %w", err)
+	}
+	dir := filepath.Dir(manifestPath)
+	for _, f := range parsed.Files {
+		if f.Status != "ok" {
+			continue
+		}
+		sum, err := hashFile(filepath.Join(dir, filepath.FromSlash(f.Name)))
+		if err != nil {
+			return fmt.Errorf("verify %s: %w", f.Name, err)
+		}
+		if !strings.EqualFold(sum, f.SHA256) {
+			return fmt.Errorf("file hash mismatch for %s — backup file was modified after signing", f.Name)
+		}
 	}
 	return nil
 }
