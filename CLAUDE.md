@@ -23,20 +23,29 @@ go build -o backup ./cmd/backup
 | Path | Purpose |
 |------|---------|
 | `internal/api/endpoints.go` | All 21 endpoints (edit here to add/remove) |
-| `internal/api/client.go` | HTTP client — GET-only, rate limiter 250/5min, retry 429+5xx |
+| `internal/api/client.go` | HTTP client — GET-only, explicit TLS≥1.2, rate limiter 250/5min, retry 429+5xx |
+| `internal/api/pagination.go` | Page accumulation with url.Values query + per-endpoint item cap |
 | `internal/backup/backup.go` | Worker pool (5), fetches all endpoints |
-| `internal/backup/manifest.go` | SHA256 per file + HMAC-SHA-256 .sig |
-| `internal/storage/writer.go` | Timestamped dirs, 0600 files, path sanitising |
-| `cmd/backup/main.go` | CLI entry point |
+| `internal/backup/manifest.go` | SHA256 per file + HMAC-SHA-256 .sig, error sanitization, hex-decoded verify |
+| `internal/storage/writer.go` | Timestamped dirs, 0600 files, path sanitising + symlink resolution |
 | `docs/api-snapshot.json` | Baseline of Holaspirit API field structure (for drift detection) |
+| `scripts/check-api-schema.sh` | Credential-free API drift check vs published OpenAPI spec |
+| `scripts/check-cbom.sh` | Anti-staleness: every crypto import must be in the CBOM |
+| `docs/cbom.cdx.json` | CycloneDX 1.6 Cryptography BoM (hand-authored) |
+| `policy/nist-crypto.rego` | OPA/conftest NIST crypto policy (gates the release) |
 
 ## Architecture
 
 - **GET-only**: client has only `Get()` — no Post/Patch/Delete possible
 - **No token exposure**: no `Token()` accessor, token never in logs/errors
+- **TLS**: explicit minimum TLS 1.2, `InsecureSkipVerify` hard-false
 - **File perms**: 0600 files, 0750 dirs
 - **HMAC key**: domain-separated (`holaspirit-backup-manifest-v1` prefix)
-- **Worker pool**: 5 bounded goroutines
+- **Log-injection guard**: API/operator values sanitized before logging
+- **Symlink guard**: output dir resolved + containment-checked before writing
+- **Worker pool**: 5 bounded goroutines; per-endpoint item cap bounds memory
+- **CBOM**: real crypto surface in `docs/cbom.cdx.json`, checked against NIST
+  SP 800-131A via OPA/conftest; non-approved algorithm or TLS<1.2 gates the release
 - **vendor/** checked in for supply-chain safety
 
 ## CI/CD Workflows
@@ -46,10 +55,11 @@ go build -o backup ./cmd/backup
 | `security-and-quality.yml` | push + PR | govulncheck, gosec, go test -race |
 | `build.yml` | push main + tags + PR | 3 platform binaries |
 | `release.yml` | `v*` tags | GitHub Release, SLSA provenance, cosign signing |
-| `cbom.yml` | push + PR | CycloneDX SBoM (`--type go`) |
-| `scorecard.yml` | push main + weekly | OpenSSF Scorecard (needs `SCORECARD_ENABLED=true` var + `SCORECARD_TOKEN` secret) |
+| `cbom.yml` | push + PR | Dependency SBoM (`sbom.cdx.json`) + CBOM validation + conftest NIST check (informational) |
+| `scorecard.yml` | push main + weekly | OpenSSF Scorecard (`SCORECARD_ENABLED=true`; `SCORECARD_TOKEN` optional) |
 | `commit-signature.yml` | push + PR | GPG commit check (needs `COMMIT_SIGNING_ENABLED=true` var + `COMMIT_SIGNING_PUBLIC_KEY` secret) |
-| `dependency-review.yml` | PR only | Block high-severity CVEs |
+| `dependency-review.yml` | PR + merge_group | Block high-severity CVEs + license allowlist |
+| `dependabot-auto-merge.yml` | Dependabot PR | Auto-merge non-major bumps once CI is green |
 | `api-update-check.yml` | daily 06:00 UTC | Spec-based drift detection → Claude adapts code → api-drift PR |
 | `auto-release.yml` | api-drift PR merged | Bump 0ver minor, push tag → triggers release |
 
@@ -64,14 +74,15 @@ api-update-check (daily 06:00 UTC — no credentials needed)
   → PR with label api-drift (auto-merge only if snapshot-only;
     Go/script changes always require human review — prompt-injection guard)
   → merge → auto-release bumps 0ver minor + pushes tag
-  → release workflow: security-gate (govulncheck, gosec, race tests,
-    blocks while issues labeled `security` are open) → build → signed release
+  → release workflow: security-gate (govulncheck, gosec, race tests, CBOM NIST
+    policy, blocks while issues labeled `security` are open) → build → signed release
 ```
 
 - Baseline: `docs/api-snapshot.json` (committed); sentinel `__ENDPOINT_MISSING__`
   marks endpoints the tool calls that are no longer documented
-- NOTE: releases are blocked until the open security review findings
-  (issues #9–#33, labels `security`/`severity:*`) are resolved — by design
+- The original security review findings (issues #9–#33) are all resolved; the
+  security-gate now passes (release v0.2.0 shipped). It will block again if any
+  new `security`-labeled issue is opened — by design
 - Exit 2 (spec download failed) fails the job; no snapshot is written
 
 ## Repo
@@ -80,17 +91,23 @@ api-update-check (daily 06:00 UTC — no credentials needed)
 - Versioning: 0ver — major stays 0, e.g. `v0.2.0` (see https://0ver.org/)
 - go.mod: `go 1.25.8`, but CI uses `go-version: '1.26'` — do not change
 
-## Pending Manual Steps
+## Dependency Updates (Dependabot)
 
-- Set `SCORECARD_TOKEN` secret (optional — only improves Branch-Protection check)
-- Set `COMMIT_SIGNING_PUBLIC_KEY` secret (GPG public key)
-- Set `ANTHROPIC_API_KEY` secret **or** `CLAUDE_CODE_OAUTH_TOKEN` secret (Pro/Max
-  subscription via `claude setup-token`) — enables automatic code adaptation on drift
-- Set `REPO_PAT` secret (PAT with repo + workflow scope — lets drift PRs trigger CI
-  and auto-release tags trigger the release workflow)
-- Resolve open security findings #9–#33 (release security-gate blocks until then)
-- HOLASPIRIT_TOKEN / HOLASPIRIT_ORG_ID are **no longer needed** for the drift
-  check (it now reads the public OpenAPI spec)
+- `dependabot.yml`: daily, with a 7-day `cooldown` (supply-chain maturity window
+  — a release is only proposed a week after publication; security advisories bypass it)
+- `dependabot-auto-merge.yml`: auto-merges non-major bumps once required CI is green
+  (build + security-and-quality + dependency-review); major bumps stay open for review
+- Branch ruleset `main-protection` enforces PR + required checks before any merge
+
+## Configured (was "pending")
+
+- ✅ Security findings #9–#33 resolved; release v0.2.0 shipped (gate passes)
+- ✅ Secrets CLAUDE_CODE_OAUTH_TOKEN + REPO_PAT set; SCORECARD_ENABLED=true
+- ✅ "Allow auto-merge" enabled; `main-protection` ruleset active; Actions cannot approve PRs
+- ✅ Secret scanning + push protection + private vulnerability reporting on
+- HOLASPIRIT_TOKEN / HOLASPIRIT_ORG_ID are **no longer needed** (drift check reads the public spec)
+- Optional, still open: SCORECARD_TOKEN (improves Branch-Protection check only),
+  COMMIT_SIGNING_PUBLIC_KEY + COMMIT_SIGNING_ENABLED (to enforce signed commits)
 
 ## Confluence (HB Space, cloudId: 78b5b3f6-a4c9-4f9d-856e-56eca016288c)
 

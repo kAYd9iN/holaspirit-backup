@@ -13,22 +13,30 @@ Source Code (GitHub)
     ▼
 CI-Build (GitHub Actions — gehosteter Runner)
     │
-    ├─ govulncheck (CVE-Scan, @v1.1.3)
-    ├─ gosec (SAST, @v2.21.4)
+    ├─ govulncheck (CVE-Scan, @v1.1.4)
+    ├─ gosec (SAST, @v2.24.7)
     ├─ go mod verify (vendor-Integrität)
     ├─ go test -race (Tests)
     └─ Alle Actions auf Commit-SHA gepinnt
     │
+    ▼
+Release-Security-Gate (release.yml)
+    │
+    ├─ govulncheck + gosec + Race-Tests
+    ├─ CBOM-Konsistenz (check-cbom.sh) + NIST-Policy (conftest)
+    └─ Block bei offenen `security`-Issues
+    │  (alle Build-Jobs starten erst nach grünem Gate)
     ▼
 Release-Artefakte
     │
     ├─ SLSA L2 Provenance-Attestation (GitHub Attestation Registry)
     ├─ cosign Bundle (Keyless-Signatur via Sigstore/OIDC)
     ├─ SHA256SUMS (Checksummen)
-    └─ CycloneDX CBOM (Cryptography Bill of Materials)
+    └─ SBoM + CBOM (CycloneDX, als Artifact)
     │
     ▼
 OpenSSF Scorecard (wöchentlich) + Dependency Review (PRs)
+    + Dependabot (täglich, 7-Tage-Cooldown, Auto-Merge reifer Bumps)
 ```
 
 ## SLSA Level 2
@@ -137,9 +145,18 @@ Details: [https://securityscorecards.dev](https://securityscorecards.dev)
 
 ## Dependency Review
 
-Bei jedem Pull Request auf `main` wird automatisch geprüft, ob neue oder geänderte  
-Abhängigkeiten bekannte Schwachstellen (CVSS ≥ 7.0) enthalten.  
-Der PR wird blockiert und ein Kommentar mit den Details gepostet.
+Bei jedem Pull Request auf `main` (und in der Merge-Queue) wird automatisch geprüft, ob neue oder geänderte  
+Abhängigkeiten bekannte Schwachstellen (CVSS ≥ 7.0) enthalten **oder** eine nicht-permissive Lizenz tragen  
+(Allowlist: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC). Der PR wird blockiert und ein Kommentar mit den Details gepostet.  
+Direkte Pushes auf `main` sind durch das `main-protection`-Ruleset ausgeschlossen, sodass diese Prüfung nicht umgangen werden kann.
+
+## Dependabot — Reifezeit & Auto-Merge
+
+Abhängigkeits-Updates durchlaufen eine **Supply-Chain-Reifezeit**, bevor sie übernommen werden:
+
+- **Cooldown:** Ein Release wird erst **7 Tage nach Veröffentlichung** als PR vorgeschlagen (`cooldown: default-days: 7` in `dependabot.yml`). So werden kompromittierte oder zurückgezogene Versionen meist erkannt, bevor sie gemerged werden. **Security-Advisories umgehen den Cooldown** (sofort).
+- **Täglich:** Nach Ablauf der Reifezeit wird der PR beim nächsten täglichen Check geöffnet.
+- **Auto-Merge:** `dependabot-auto-merge.yml` merged **Minor/Patch automatisch**, sobald die Pflicht-CI (Build + security-and-quality + dependency-review) grün ist. **Major-Bumps bleiben für manuelle Review offen.**
 
 ## vendor/ — eingecheckte Abhängigkeiten
 
@@ -156,11 +173,13 @@ Integrität prüfen:
 go mod verify
 ```
 
-## CycloneDX CBOM
+## SBoM und CBOM
 
-Bei jedem CI-Lauf wird ein Cryptography Bill of Materials (CBOM) generiert:
+Bei jedem CI-Lauf werden zwei getrennte Stücklisten erzeugt (Artefakt `bom-cyclonedx`, 365 Tage):
 
-- Dokumentiert alle kryptografischen Primitive und Bibliotheken
-- Format: CycloneDX JSON
-- Artefakt: `cbom-cyclonedx` (365 Tage in GitHub Actions)
-- Optionale Signierung via `CBOM_SIGNING_KEY_PEM` Secret
+- **Dependency-SBoM** (`sbom.cdx.json`) — via cdxgen `--type go`: alle Modul-Abhängigkeiten mit PURLs, Hashes, Lizenzen. **Kein** CBOM (Go-Stdlib-Krypto erscheint hier nicht).
+- **CBOM** (`docs/cbom.cdx.json`) — die tatsächliche Krypto-Oberfläche als CycloneDX 1.6 mit `cryptographic-asset`-Komponenten (SHA-256, HMAC-SHA-256, TLS ≥ 1.2, ECDSA P-256). Hand-gepflegt, da automatisierte Scanner Go-Stdlib-Krypto nicht erkennen; `scripts/check-cbom.sh` hält ihn ehrlich.
+
+**NIST-Compliance-Gate:** Der CBOM wird via OPA/conftest gegen `policy/nist-crypto.rego` (NIST SP 800-131A) geprüft. Ein nicht-zugelassener Algorithmus oder TLS < 1.2 lässt das Release-Security-Gate fehlschlagen. Quantensicherheit ist eine nicht-blockierende Warnung (ECDSA P-256). Lokal: `go run github.com/open-policy-agent/conftest@v0.68.2 test docs/cbom.cdx.json --policy policy`.
+
+- Optionale Signierung beider BoMs via `CBOM_SIGNING_KEY_PEM` Secret

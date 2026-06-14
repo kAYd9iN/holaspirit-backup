@@ -22,28 +22,40 @@ holaspirit-backup/
 │   │   ├── credentials.go       # Interface + Mock
 │   │   └── wincred.go           # Windows Credential Manager (build tag windows)
 │   └── storage/
-│       └── writer.go            # Dateien schreiben, Pfad-Sanitizing, 0600/0750
+│       └── writer.go            # Dateien schreiben, Pfad-Sanitizing + Symlink-Auflösung, 0600/0750
 ├── scripts/
-│   └── verify_signed_commits.sh # GPG-Commit-Signatur-Prüfung
+│   ├── verify_signed_commits.sh # GPG-Commit-Signatur-Prüfung
+│   ├── check-api-schema.sh      # credential-freier API-Drift-Check (publizierte Spec)
+│   └── check-cbom.sh            # CBOM-Konsistenz (Krypto-Import muss im CBOM stehen)
+├── policy/
+│   └── nist-crypto.rego         # OPA/conftest NIST-Krypto-Policy (gatet Release)
 ├── vendor/                      # eingecheckte Abhängigkeiten
 ├── docs/
 │   ├── architecture.md          # diese Datei
 │   ├── security-concept.md      # Sicherheitskonzept
+│   ├── trust-model.md           # Vertrauensgrenzen
 │   ├── operations.md            # Betrieb & Installation
-│   ├── supply-chain.md          # SLSA, cosign, Scorecard
+│   ├── supply-chain.md          # SLSA, cosign, Scorecard, CBOM
+│   ├── api-snapshot.json        # Drift-Check-Baseline
+│   ├── cbom.cdx.json            # CycloneDX 1.6 Cryptography BoM
 │   └── plans/                   # Implementierungspläne
 ├── go.mod
 ├── go.sum
 ├── SECURITY.md                  # GitHub Security Policy
-└── .github/
-    └── workflows/
-        ├── security.yml         # govulncheck + gosec + Tests
-        ├── build.yml            # Matrix-Build (3 Plattformen)
-        ├── release.yml          # GitHub Release + SLSA L2 + cosign + SHA256
-        ├── cbom.yml             # CycloneDX CBOM
-        ├── commit-signature.yml # GPG-Commit-Prüfung
-        ├── scorecard.yml        # OpenSSF Scorecard (wöchentlich)
-        └── dependency-review.yml # CVE-Prüfung bei PRs
+├── .github/
+│   ├── dependabot.yml           # täglich, 7-Tage-Cooldown
+│   └── workflows/
+│       ├── security.yml         # govulncheck + gosec + Tests
+│       ├── build.yml            # Matrix-Build (3 Plattformen)
+│       ├── release.yml          # Security-Gate → SLSA L2 + cosign + SHA256
+│       ├── cbom.yml             # Dependency-SBoM + CBOM + NIST-conftest
+│       ├── commit-signature.yml # GPG-Commit-Prüfung
+│       ├── scorecard.yml        # OpenSSF Scorecard (wöchentlich)
+│       ├── dependency-review.yml # CVE- + Lizenz-Prüfung bei PRs
+│       ├── dependabot-auto-merge.yml # Auto-Merge reifer Non-Major-Bumps
+│       ├── api-update-check.yml # täglicher Spec-Drift-Check → Claude → PR
+│       └── auto-release.yml     # api-drift-Merge → Tag → Release
+└── (Self-Update-Schlaufe: siehe CLAUDE.md)
 ```
 
 ## Architekturentscheidung: Bounded Worker Pool mit Rate-Limiter

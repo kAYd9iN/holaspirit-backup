@@ -93,7 +93,7 @@ C:\Tools\holaspirit-backup\backup.exe --dry-run
 Erwartete Ausgabe:
 
 ```
-time=2026-03-06T02:00:00Z level=INFO msg="organization discovered" id=org_xxx
+time=2026-03-06T02:00:00Z level=INFO msg="organization confirmed" id=org_xxx
 time=2026-03-06T02:00:00Z level=INFO msg="dry run successful — connection OK"
 ```
 
@@ -106,7 +106,7 @@ C:\Tools\holaspirit-backup\backup.exe --output C:\Backups\holaspirit
 Erwartete Ausgabe:
 
 ```
-time=2026-03-06T02:00:00Z level=INFO msg="organization discovered" id=org_xxx
+time=2026-03-06T02:00:00Z level=INFO msg="organization confirmed" id=org_xxx
 time=2026-03-06T02:00:00Z level=INFO msg="backup directory created" path=C:\Backups\holaspirit\2026-03-06T02-00-00
 time=2026-03-06T02:00:00Z level=INFO msg="fetching endpoints" count=21
 time=2026-03-06T02:00:45Z level=INFO msg="endpoint ok" name=circles records=42
@@ -177,6 +177,7 @@ Hauptbefehl:
   --org-id ID       Organisations-ID (optional, wird automatisch ermittelt)
   --dry-run         Verbindung testen ohne Daten zu schreiben
   --timeout MIN     Gesamt-Timeout in Minuten (Standard: 120, 0 = kein Timeout)
+  --audit           Hostname + Benutzer im Manifest erfassen (Audit-Trail)
   --version         Version anzeigen
   --help            Hilfe anzeigen
 
