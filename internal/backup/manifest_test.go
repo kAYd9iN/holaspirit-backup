@@ -185,3 +185,38 @@ func TestAddFailedFile_SanitizesControlChars(t *testing.T) {
 type fmtErr string
 
 func (e fmtErr) Error() string { return string(e) }
+
+// TestVerifyManifest_DetectsFileTampering is the regression for the local-test
+// finding: verify must re-hash backup files, not only check the manifest's own
+// signature. Modifying a backed-up file after signing must fail verification.
+func TestVerifyManifest_DetectsFileTampering(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "circles.json")
+	if err := os.WriteFile(filePath, []byte(`[{"id":"c1"}]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := backup.NewManifest("org", "dev", time.Now())
+	m.Root = dir
+	if err := m.AddFile(filePath); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(dir, "backup-manifest.json")
+	if err := m.Write(manifestPath, "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := backup.VerifyManifest(manifestPath, "tok"); err != nil {
+		t.Fatalf("intact backup should verify: %v", err)
+	}
+
+	if err := os.WriteFile(filePath, []byte(`[{"id":"tampered"}]`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := backup.VerifyManifest(manifestPath, "tok")
+	if err == nil {
+		t.Fatal("verify must fail after a backup file is modified")
+	}
+	if !strings.Contains(err.Error(), "hash mismatch") {
+		t.Errorf("expected a hash-mismatch error, got: %v", err)
+	}
+}
