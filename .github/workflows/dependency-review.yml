@@ -30,3 +30,7 @@ jobs:
           # allowed for new/updated dependencies. A GPL/AGPL dependency would
           # fail the check before it can be merged.
           allow-licenses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC
+          # golang.org/x/* ship a PATENTS grant that scancode reports as
+          # "BSD-3-Clause AND LicenseRef-scancode-google-patent-license-golang".
+          # The patent grant is permissive; exempt these trusted Go-team packages.
+          allow-dependencies-licenses: pkg:golang/golang.org/x/sys, pkg:golang/golang.org/x/time
