@@ -57,7 +57,6 @@ go build -o backup ./cmd/backup
 | `release.yml` | `v*` tags | GitHub Release, SLSA provenance, cosign signing |
 | `cbom.yml` | push + PR | Dependency SBoM (`sbom.cdx.json`) + CBOM validation + conftest NIST check (informational) |
 | `scorecard.yml` | push main + weekly | OpenSSF Scorecard (`SCORECARD_ENABLED=true`; `SCORECARD_TOKEN` optional) |
-| `commit-signature.yml` | push + PR | GPG commit check (needs `COMMIT_SIGNING_ENABLED=true` var + `COMMIT_SIGNING_PUBLIC_KEY` secret) |
 | `dependency-review.yml` | PR + merge_group | Block high-severity CVEs + license allowlist |
 | `dependabot-auto-merge.yml` | Dependabot PR | Auto-merge non-major bumps once CI is green |
 | `api-update-check.yml` | daily 06:00 UTC | Spec-based drift detection → Claude adapts code → api-drift PR |
@@ -103,11 +102,20 @@ api-update-check (daily 06:00 UTC — no credentials needed)
 
 - ✅ Security findings #9–#33 resolved; release v0.2.0 shipped (gate passes)
 - ✅ Secrets CLAUDE_CODE_OAUTH_TOKEN + REPO_PAT set; SCORECARD_ENABLED=true
-- ✅ "Allow auto-merge" enabled; `main-protection` ruleset active; Actions cannot approve PRs
+- ✅ "Allow auto-merge" enabled; `main-protection` ruleset active (PR + checks + squash-only); Actions cannot approve PRs
 - ✅ Secret scanning + push protection + private vulnerability reporting on
 - HOLASPIRIT_TOKEN / HOLASPIRIT_ORG_ID are **no longer needed** (drift check reads the public spec)
-- Optional, still open: SCORECARD_TOKEN (improves Branch-Protection check only),
-  COMMIT_SIGNING_PUBLIC_KEY + COMMIT_SIGNING_ENABLED (to enforce signed commits)
+- Optional, still open: SCORECARD_TOKEN (improves Branch-Protection check only)
+
+## Commit signing — not enforced (by design)
+
+Not enforced at the branch level. GitHub's `required_signatures` rejects merging
+any PR with unsigned commits (it inspects the PR's commits, not just the squash
+result), which would break the api-drift loop (its `github-actions[bot]` commits
+are unsigned) and block unsigned local commits. The high-value signature — the
+release artifacts — is already provided by cosign + SLSA. The old
+`commit-signature.yml` workflow was removed (inconsistent, verified nothing
+without a key, strict mode incompatible with bot commits).
 
 ## Confluence (HB Space, cloudId: 78b5b3f6-a4c9-4f9d-856e-56eca016288c)
 

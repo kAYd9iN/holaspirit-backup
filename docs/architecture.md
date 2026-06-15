@@ -24,7 +24,6 @@ holaspirit-backup/
 │   └── storage/
 │       └── writer.go            # Dateien schreiben, Pfad-Sanitizing + Symlink-Auflösung, 0600/0750
 ├── scripts/
-│   ├── verify_signed_commits.sh # GPG-Commit-Signatur-Prüfung
 │   ├── check-api-schema.sh      # credential-freier API-Drift-Check (publizierte Spec)
 │   └── check-cbom.sh            # CBOM-Konsistenz (Krypto-Import muss im CBOM stehen)
 ├── policy/
@@ -49,7 +48,6 @@ holaspirit-backup/
 │       ├── build.yml            # Matrix-Build (3 Plattformen)
 │       ├── release.yml          # Security-Gate → SLSA L2 + cosign + SHA256
 │       ├── cbom.yml             # Dependency-SBoM + CBOM + NIST-conftest
-│       ├── commit-signature.yml # GPG-Commit-Prüfung
 │       ├── scorecard.yml        # OpenSSF Scorecard (wöchentlich)
 │       ├── dependency-review.yml # CVE- + Lizenz-Prüfung bei PRs
 │       ├── dependabot-auto-merge.yml # Auto-Merge reifer Non-Major-Bumps
