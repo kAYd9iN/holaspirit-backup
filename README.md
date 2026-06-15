@@ -125,3 +125,12 @@ go run github.com/securego/gosec/v2/cmd/gosec@v2.24.7 ./...
 # CBOM gegen NIST-Policy prüfen
 go run github.com/open-policy-agent/conftest@v0.68.2 test docs/cbom.cdx.json --policy policy
 ```
+
+## Lizenz
+
+Lizenziert unter der **GNU General Public License v3.0** — siehe [LICENSE](LICENSE).
+
+Freie Software: nutzen, studieren, anpassen und weitergeben ist erlaubt (auch
+kommerziell). Copyleft: jede Weitergabe oder modifizierte Version muss ebenfalls
+unter der GPL-3.0 frei bleiben — es kann keine geschlossene, proprietäre Version
+daraus gemacht werden.
