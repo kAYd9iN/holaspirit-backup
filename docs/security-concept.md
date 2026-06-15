@@ -84,7 +84,6 @@ dass ein Bug oder eine fehlerhafte Erweiterung Holaspirit-Daten verändert.
 | `build.yml` | Push main, Tags, PR | Matrix-Build (linux/amd64, linux/arm64, windows/amd64) |
 | `release.yml` | `v*` Tags | Security-Gate → SLSA L2 Attestation + cosign Signing + SHA256 |
 | `cbom.yml` | Push, PR | Dependency-SBoM + CBOM-Validierung + conftest-NIST-Check (informativ) |
-| `commit-signature.yml` | Push main, PR | GPG-Signatur aller Commits prüfen |
 | `scorecard.yml` | Push main, wöchentlich | OpenSSF Scorecard Security-Scoring |
 | `dependency-review.yml` | PRs, merge_group | Neue Abhängigkeiten auf CVEs + Lizenz-Allowlist prüfen |
 | `dependabot-auto-merge.yml` | Dependabot-PR | Auto-Merge reifer Minor/Patch-Bumps nach grüner CI |

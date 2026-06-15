@@ -8,8 +8,6 @@ und wie jede Schutzschicht verifiziert werden kann.
 ```
 Source Code (GitHub)
     │
-    ├─ Commit-Signatur (GPG) — optional, --strict
-    │
     ▼
 CI-Build (GitHub Actions — gehosteter Runner)
     │
