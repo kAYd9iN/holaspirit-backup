@@ -171,3 +171,21 @@ It is **not a secret** — it grants no access without a valid API token — but
 is a stable identifier. It is intentionally not redacted, because it is required
 to identify which organization a backup belongs to. Treat manifests with the
 same care as the backup directory they describe.
+
+## Accepted OpenSSF Scorecard findings
+
+CodeQL reports no code issues. The remaining OpenSSF Scorecard alerts are
+posture warnings, handled as follows:
+
+- **Token-Permissions** — fixed: every workflow declares `contents: read` at the
+  top level and grants write scopes only on the jobs that need them.
+- **Vulnerabilities** — dependency CVEs are kept current by Dependabot; reachable
+  issues are gated by `govulncheck` in the release security gate.
+- **Branch-Protection / Code-Review** (`required_approving_review_count: 0`) —
+  **accepted by design.** The api-drift self-update loop auto-merges snapshot-only
+  PRs once required status checks pass; requiring human approvers would break it.
+  Code changes (Go/scripts) still require human review, and the `main` ruleset
+  still enforces PR + required checks + no force-push.
+- **Fuzzing** — not yet integrated; on the roadmap (parsers handle untrusted API
+  responses, so fuzzing is a planned hardening step).
+- **CII Best Practices badge** — optional, not pursued.
