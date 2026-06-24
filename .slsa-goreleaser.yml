@@ -1,15 +1,15 @@
 version: 1
 
-env:
-  - GOOS=linux
-  - GOARCH=amd64
+# SLSA Level 3 build configuration for the slsa-github-generator Go builder.
+# Produces a hermetically built linux/amd64 binary with signed provenance.
+goos: linux
+goarch: amd64
 
 main: ./cmd/backup/
-
 binary: backup-linux-amd64
+
+flags:
+  - -mod=vendor
 
 ldflags:
   - "-s -w -X main.version={{ .Tag }}"
-
-goflags:
-  - "-mod=vendor"
