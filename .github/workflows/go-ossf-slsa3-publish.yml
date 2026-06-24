@@ -13,7 +13,10 @@ jobs:
       id-token: write
       contents: read
       actions: read
-    uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a  # v2.1.0
+    # NOTE: slsa-github-generator MUST be referenced by a semantic version tag,
+    # not a commit SHA — the SLSA verifier needs the version to verify the
+    # builder's own provenance. SHA-pinning causes a startup failure.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
     with:
       go-version-file: go.mod
       upload-assets: false
