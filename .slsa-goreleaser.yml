@@ -8,8 +8,7 @@ goarch: amd64
 main: ./cmd/backup/
 binary: backup-linux-amd64
 
-flags:
-  - -mod=vendor
-
+# No -mod=vendor flag: the builder's flag allowlist rejects it, and Go uses the
+# checked-in vendor/ directory automatically (go.mod declares go >= 1.14).
 ldflags:
   - "-s -w -X main.version={{ .Tag }}"
