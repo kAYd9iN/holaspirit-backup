@@ -1,0 +1,15 @@
+version: 1
+
+env:
+  - GOOS=linux
+  - GOARCH=amd64
+
+main: ./cmd/backup/
+
+binary: backup-linux-amd64
+
+ldflags:
+  - "-s -w -X main.version={{ .Tag }}"
+
+goflags:
+  - "-mod=vendor"
