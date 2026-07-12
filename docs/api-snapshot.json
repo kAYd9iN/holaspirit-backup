@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-12T22:10:24Z",
+  "generated": "2026-07-12T07:53:19Z",
   "sources": {
     "doc": {
       "url": "app.holaspirit.com/api/doc/",
@@ -337,6 +337,7 @@
       "logoUrl",
       "meetingConfiguration",
       "memberHierarchyConfiguration",
+      "migration",
       "name",
       "objectiveConfiguration",
       "onboarding",
