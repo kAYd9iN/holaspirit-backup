@@ -69,9 +69,10 @@ go build -o backup ./cmd/backup
 api-update-check (daily 06:00 UTC — no credentials needed)
   → compares Holaspirit's PUBLISHED OpenAPI spec (embedded in the public
     /api/doc/ page) against docs/api-snapshot.json
-  → drift detected → Claude adapts internal/api/endpoints.go
-    (needs ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)
-  → PR with label api-drift (auto-merge only if snapshot-only;
+  → drift detected → job `check`: Claude adapts internal/api/endpoints.go
+    (needs ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) → patch artifact
+  → job `verify`: build + race tests on the patch (read-only, no secrets)
+  → job `pr`: PR with label api-drift (auto-merge only if snapshot-only;
     Go/script changes always require human review — prompt-injection guard)
   → merge → auto-release bumps 0ver minor + pushes tag
   → release workflow: security-gate (govulncheck, gosec, race tests, CBOM NIST
@@ -84,6 +85,13 @@ api-update-check (daily 06:00 UTC — no credentials needed)
   security-gate now passes (release v0.2.0 shipped). It will block again if any
   new `security`-labeled issue is opened — by design
 - Exit 2 (spec download failed) fails the job; no snapshot is written
+- Trust split: `drift.diff` comes from Holaspirit's public docs (untrusted). The `check`
+  job has no persisted git credentials, and Claude is limited to Read/Edit/Write/Glob/
+  Grep + `go build`/`go vet` (no `go test`, it executes code). Tests run in `verify`
+  (no secrets, no OIDC, no Go cache). Only `pr` sees REPO_PAT and it runs no patch code.
+  Only `docs/api-snapshot.json`, `internal/` and `scripts/check-api-schema.sh` enter the patch
+- One drift PR at a time: while an `api-drift` PR is open, the check only reports
+  (avoids a duplicate PR every day)
 
 ## Repo
 
