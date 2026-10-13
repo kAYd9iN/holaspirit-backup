@@ -108,8 +108,8 @@ Erwartete Ausgabe:
 ```
 time=2026-03-06T02:00:00Z level=INFO msg="organization confirmed" id=org_xxx
 time=2026-03-06T02:00:00Z level=INFO msg="backup directory created" path=C:\Backups\holaspirit\2026-03-06T02-00-00
-time=2026-03-06T02:00:00Z level=INFO msg="fetching endpoints" count=21
-time=2026-03-06T02:00:45Z level=INFO msg="endpoint ok" name=circles records=42
+time=2026-03-06T02:00:00Z level=INFO msg="fetching endpoints" count=47
+time=2026-03-06T02:00:45Z level=INFO msg="endpoint ok" name=circles records=42 files=2
 ...
 time=2026-03-06T02:00:46Z level=INFO msg="backup complete" dir=C:\Backups\holaspirit\2026-03-06T02-00-00
 ```
@@ -192,6 +192,26 @@ Windows Task Scheduler protokolliert diesen.
 
 Fehlgeschlagene Endpunkte werden im Manifest als `"status": "failed"` markiert —  
 der Rest des Backups bleibt verwendbar.
+
+### Erster Lauf: Ergebnis prüfen
+
+Die Paginierung folgt der veröffentlichten API-Spec und konnte vor dem ersten Einsatz nicht gegen
+eine echte Organisation getestet werden. Nach dem ersten Lauf deshalb kurz prüfen:
+
+1. **Token:** von einem Holaspirit-Admin, sonst schlagen Admin-Endpunkte (Webhooks, SAML) fehl.
+2. **Log durchsehen**, die drei Meldungen bedeuten:
+
+   | Meldung | Bedeutung |
+   |---------|-----------|
+   | `endpoint ok` | vollständig gesichert; `records` = Anzahl Einträge |
+   | `endpoint incomplete` | Daten geschrieben, aber die API meldete mehr Einträge als geliefert (Zahlen in der Meldung) |
+   | `endpoint failed` | nichts gesichert; Grund in der Meldung (z. B. HTTP 403 = Token ohne Berechtigung, „page parameter seems to be ignored“ = Paginierung passt nicht zur API) |
+
+3. **Plausibilität:** `records` von `members`, `roles`, `circles` mit den Zahlen in der
+   Holaspirit-Oberfläche vergleichen. Steht bei einer grossen Organisation überall eine runde
+   Zahl wie 10, 20 oder 100, ist die Paginierung verdächtig.
+4. Bei `incomplete` oder `failed`: die Log-Zeilen (sie enthalten keine Organisationsdaten) an die
+   Maintainer weitergeben. Den Backup-Ordner selbst nicht weitergeben, er enthält Organisationsdaten.
 
 ## Backup-Aufbewahrung
 

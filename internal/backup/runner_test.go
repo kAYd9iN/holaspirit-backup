@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -56,6 +57,46 @@ func TestRunner_FetchesAllEndpoints(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(w.Dir(), "circles.json")); os.IsNotExist(err) {
 		t.Error("circles.json not created")
+	}
+}
+
+// A paginated endpoint writes <name>.json plus <name>-linked.json, and a
+// shortfall against the API's reported total is surfaced, not swallowed.
+func TestRunner_WritesLinkedAndFlagsIncomplete(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"data":       []map[string]any{{"id": "r1", "accountabilities": []string{"a1"}}},
+			"linked":     map[string]any{"accountabilities": []map[string]string{{"id": "a1", "description": "text"}}},
+			"pagination": map[string]any{"totalItems": 2, "pagesCount": 1},
+		})
+	}))
+	defer srv.Close()
+
+	client := api.NewClient(srv.URL, "api:test")
+	client.MaxRetries = 0
+	w, err := storage.NewWriter(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := RunFetchers(context.Background(), client, w,
+		[]api.Endpoint{{Name: "roles", Path: "/api/organizations/org1/roles", Paginated: true}})[0]
+
+	if res.Err != nil {
+		t.Fatalf("unexpected error: %v", res.Err)
+	}
+	if got := fmt.Sprint(res.Files); got != "[roles.json roles-linked.json]" {
+		t.Errorf("files = %s", got)
+	}
+	if res.Incomplete == nil {
+		t.Error("expected Incomplete: API reported 2 items, 1 was delivered")
+	}
+	linked, err := os.ReadFile(filepath.Join(w.Dir(), "roles-linked.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(linked), `"description": "text"`) {
+		t.Errorf("roles-linked.json lacks the linked accountability: %s", linked)
 	}
 }
 

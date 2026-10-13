@@ -113,17 +113,62 @@ def fields(path):
     except (KeyError, TypeError):
         return ["__SCHEMA_UNPARSEABLE__"]
 
-# Every endpoint internal/api/endpoints.go calls, mapped to its spec path.
+# Every endpoint internal/api/endpoints.go backs up: backup file name -> spec path
+# below BASE. Must match orgCollections in endpoints.go (enforced by the Go test
+# TestDriftCheckCoversAllEndpoints).
 BASE = "/api/organizations/{organization_id}"
-NAMES = [
-    "organization", "circles", "circles-timespent", "roles", "members",
-    "tensions", "policies", "meetings", "okrs", "node-okrs", "tasks",
-    "boards", "columns", "checklists", "metrics", "publications",
-    "categories", "attachments", "chartviews", "calendars", "backups",
-]
+ENDPOINTS = {
+    "organization": "",
+    "circles": "/circles",
+    "circles-timespent": "/circles-timespent",
+    "roles": "/roles",
+    "members": "/members",
+    "tensions": "/tensions",
+    "policies": "/policies",
+    "meetings": "/meetings",
+    "okrs": "/okrs",
+    "node-okrs": "/node-okrs",
+    "tasks": "/tasks",
+    "boards": "/boards",
+    "columns": "/columns",
+    "checklists": "/checklists",
+    "metrics": "/metrics",
+    "publications": "/publications",
+    "categories": "/categories",
+    "attachments": "/attachments",
+    "chartviews": "/chartviews",
+    "calendars": "/calendars",
+    "backups": "/backups",
+    "custom-fields": "/custom-fields",
+    "roles-custom-fields": "/roles-custom-fields",
+    "roles-relations": "/roles/relations",
+    "roles-diagram": "/roles-diagram",
+    "members-hierarchy": "/members-hierarchy",
+    "labels": "/labels",
+    "highlights": "/highlights",
+    "timeframes": "/timeframes",
+    "templates": "/templates",
+    "meetingtemplates": "/meetingtemplates",
+    "meetings-recurrences": "/meetings/recurrences",
+    "translations": "/translations",
+    "publications-revision": "/publications/revision",
+    "comment-feeds": "/comment-feeds",
+    "node-boards": "/node-boards",
+    "node-circles": "/node-circles",
+    "node-meetings": "/node-meetings",
+    "node-members": "/node-members",
+    "node-roles": "/node-roles",
+    "node-roles-custom-fields": "/node-roles-custom-fields",
+    "node-roles-diagram": "/node-roles-diagram",
+    "node-tasks": "/node-tasks",
+    "node-tensions": "/node-tensions",
+    "node-translations": "/node-translations",
+    "webhooks": "/webhooks",
+    "authentication-saml": "/authentication/saml",
+}
 endpoints = {
-    name: fields(BASE if name == "organization" else f"{BASE}/{name}")
-    for name in sorted(NAMES)
+    name: fields(BASE + sub)
+    for name, sub in sorted(ENDPOINTS.items())
 }
 
 print(json.dumps({

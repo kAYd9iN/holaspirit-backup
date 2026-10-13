@@ -220,3 +220,48 @@ func TestVerifyManifest_DetectsFileTampering(t *testing.T) {
 		t.Errorf("expected a hash-mismatch error, got: %v", err)
 	}
 }
+
+// Incomplete files are counted separately and are still integrity-checked by
+// verify — a partial file must be as tamper-evident as a complete one.
+func TestManifest_IncompleteFilesCountedAndVerified(t *testing.T) {
+	dir := t.TempDir()
+	ok := filepath.Join(dir, "circles.json")
+	partial := filepath.Join(dir, "roles.json")
+	os.WriteFile(ok, []byte(`[{"id":"c1"}]`), 0600)
+	os.WriteFile(partial, []byte(`[{"id":"r1"}]`), 0600)
+
+	m := backup.NewManifest("org", "dev", time.Now())
+	m.Root = dir
+	if err := m.AddFile(ok); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AddIncompleteFile(partial, fmtErr("retrieved 1 of 2 items")); err != nil {
+		t.Fatal(err)
+	}
+	m.AddFailedFile("tasks", fmtErr("HTTP 500"))
+
+	manifestPath := filepath.Join(dir, "backup-manifest.json")
+	if err := m.Write(manifestPath, "tok"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got backup.Manifest
+	raw, _ := os.ReadFile(manifestPath)
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if s := got.Summary; s.Successful != 1 || s.Incomplete != 1 || s.Failed != 1 || s.TotalFiles != 3 {
+		t.Errorf("summary = %+v", s)
+	}
+	if got.Files[1].Status != "incomplete" || !strings.Contains(got.Files[1].Error, "1 of 2") {
+		t.Errorf("incomplete entry = %+v", got.Files[1])
+	}
+
+	if err := backup.VerifyManifest(manifestPath, "tok"); err != nil {
+		t.Fatalf("verify of an untouched backup failed: %v", err)
+	}
+	os.WriteFile(partial, []byte(`[{"id":"tampered"}]`), 0600)
+	if err := backup.VerifyManifest(manifestPath, "tok"); err == nil || !strings.Contains(err.Error(), "roles.json") {
+		t.Fatalf("tampering with an incomplete file must be detected, got %v", err)
+	}
+}

@@ -43,7 +43,7 @@ type FileEntry struct {
 	Name    string `json:"name"`
 	SHA256  string `json:"sha256"`
 	Records int    `json:"records,omitempty"`
-	Status  string `json:"status"` // "ok" or "failed"
+	Status  string `json:"status"` // "ok", "incomplete" (written, but fewer items than the API reported) or "failed"
 	Error   string `json:"error,omitempty"`
 }
 
@@ -51,6 +51,7 @@ type FileEntry struct {
 type Summary struct {
 	TotalFiles int `json:"total_files"`
 	Successful int `json:"successful"`
+	Incomplete int `json:"incomplete"`
 	Failed     int `json:"failed"`
 }
 
@@ -58,9 +59,9 @@ type Summary struct {
 // the operator opts in via --audit (issue #33); it is omitted by default to
 // avoid embedding host/user identifiers in every backup (issue #28).
 type AuditInfo struct {
-	Hostname string `json:"hostname,omitempty"`
-	User     string `json:"user,omitempty"`
-	Automated bool  `json:"automated,omitempty"`
+	Hostname  string `json:"hostname,omitempty"`
+	User      string `json:"user,omitempty"`
+	Automated bool   `json:"automated,omitempty"`
 }
 
 // Manifest records the full backup run metadata and per-file integrity hashes.
@@ -117,6 +118,17 @@ func (m *Manifest) SetAudit(a *AuditInfo) {
 
 // AddFile hashes the file at path and records it as a successful entry.
 func (m *Manifest) AddFile(path string) error {
+	return m.addHashed(path, "ok", nil)
+}
+
+// AddIncompleteFile hashes the file at path and records it as written but
+// incomplete: the API announced more items than were retrieved. The file is
+// still integrity-protected and checked by verify.
+func (m *Manifest) AddIncompleteFile(path string, reason error) error {
+	return m.addHashed(path, "incomplete", reason)
+}
+
+func (m *Manifest) addHashed(path, status string, reason error) error {
 	sum, err := hashFile(path)
 	if err != nil {
 		return fmt.Errorf("hash %s: %w", path, err)
@@ -124,7 +136,8 @@ func (m *Manifest) AddFile(path string) error {
 	m.Files = append(m.Files, FileEntry{
 		Name:   m.manifestName(path),
 		SHA256: sum,
-		Status: "ok",
+		Status: status,
+		Error:  sanitizeError(reason),
 	})
 	return nil
 }
@@ -143,9 +156,12 @@ func (m *Manifest) AddFailedFile(name string, err error) {
 func (m *Manifest) Write(path, token string) error {
 	m.Summary = Summary{TotalFiles: len(m.Files)}
 	for _, f := range m.Files {
-		if f.Status == "ok" {
+		switch f.Status {
+		case "ok":
 			m.Summary.Successful++
-		} else {
+		case "incomplete":
+			m.Summary.Incomplete++
+		default:
 			m.Summary.Failed++
 		}
 	}
@@ -205,8 +221,8 @@ func VerifyManifest(manifestPath, token string) error {
 	}
 	dir := filepath.Dir(manifestPath)
 	for _, f := range parsed.Files {
-		if f.Status != "ok" {
-			continue
+		if f.Status == "failed" {
+			continue // nothing was written for a failed endpoint
 		}
 		sum, err := hashFile(filepath.Join(dir, filepath.FromSlash(f.Name)))
 		if err != nil {

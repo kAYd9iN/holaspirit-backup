@@ -13,8 +13,8 @@ holaspirit-backup/
 ├── internal/
 │   ├── api/
 │   │   ├── client.go            # HTTP-Client (GET-only), Rate-Limiter, Retry
-│   │   ├── endpoints.go         # alle 21 Holaspirit-Endpunkte + ValidateOrgID
-│   │   └── pagination.go        # FetchAllPages mit maxPages=500 Guard
+│   │   ├── endpoints.go         # alle 47 Organisations-Endpunkte + ValidateOrgID
+│   │   └── pagination.go        # FetchAllPages: Paginierung, linked, Vollständigkeit
 │   ├── backup/
 │   │   ├── runner.go            # Worker Pool (5 bounded Goroutinen)
 │   │   └── manifest.go          # SHA256-Hashes + HMAC-SHA-256-Signatur
@@ -68,7 +68,7 @@ main.go
        ├─ worker: circles
        ├─ worker: roles
        ├─ worker: members
-       ├─ worker: ... (alle 21 Endpunkte, je nach Verfügbarkeit)
+       ├─ worker: ... (alle 47 Endpunkte, je nach Verfügbarkeit)
        │       ↕ koordiniert über Rate-Limiter + bounded channel
        └─ manifest.go (nach Abschluss aller Worker)
 ```
@@ -82,10 +82,56 @@ Resource-Exhaustion und respektiert das API-Rate-Limit zuverlässig.
 2. Organisations-ID via `ValidateOrgID` validieren
 3. Output-Verzeichnis anlegen: `backup/YYYY-MM-DDTHH-MM-SS/` (Berechtigungen: `0750`)
 4. Organisation-ID ermitteln via `GET /api/me` (wenn nicht per `--org-id` angegeben)
-5. Worker Pool starten (5 Goroutinen, alle 21 Endpunkte)
-6. Paginierung: alle Pages pro Endpunkt zu einer JSON-Datei zusammenführen (Berechtigungen: `0600`)
-7. Manifest schreiben: SHA256 pro Datei + HMAC-SHA-256-Signatur + Timestamp + Record-Anzahl
-8. Exit 0 (Erfolg) oder Exit 1 (Teilerfolg mit Fehler-Log)
+5. Worker Pool starten (5 Goroutinen, alle 47 Endpunkte)
+6. Paginierung: alle Seiten pro Endpunkt zu `<name>.json` zusammenführen, die mitgelieferten
+   verknüpften Objekte zu `<name>-linked.json` (Berechtigungen: `0600`)
+7. Manifest schreiben: SHA256 pro Datei + HMAC-SHA-256-Signatur + Timestamp + Status
+8. Exit 0 (alles vollständig) oder Exit 1 (mindestens ein Endpunkt `failed` oder `incomplete`)
+
+## Was gesichert wird
+
+Alle Organisations-Sammlungen der veröffentlichten Holaspirit-API, die Organisationsdaten
+enthalten (Liste in `internal/api/endpoints.go`):
+
+- **Struktur:** Organisation, Kreise, Rollen, Mitglieder, Richtlinien, Hierarchie, Rollen-Beziehungen, Diagramme
+- **Arbeit:** Tensions, Meetings (inkl. Wiederholungen und Vorlagen), OKRs, Tasks, Boards, Spalten,
+  Checklisten, Metriken, Kalender, Zeitaufwand
+- **Inhalte:** Publikationen inkl. Revisionen und Kommentar-Threads, Kategorien, Anhänge (Metadaten),
+  Highlights, Labels, Custom Fields, Zeiträume, Vorlagen, Übersetzungen, Chart-Ansichten
+- **Sichten:** die `node-*`-Baumansichten
+- **Konfiguration (Admin-Token nötig):** Webhooks, SAML-Konfiguration
+- **`*-linked.json`:** Holaspirit liefert verknüpfte Datensätze in einem `linked`-Block statt im
+  Datensatz selbst. Bei Rollen stehen z. B. die Texte der Verantwortlichkeiten, Domains und
+  Richtlinien nur dort; `roles.json` enthält davon nur die IDs.
+
+**Bewusst nicht gesichert:**
+
+| Endpunkt | Grund |
+|----------|-------|
+| `tokens` | API-Geheimnisse |
+| `stripe/current` | Abrechnung, keine Organisationsdaten |
+| `favorites` | persönliche Daten des Token-Inhabers |
+| `search-global`, `search/mention`, `migration/domain-availability` | Abfragen, keine gespeicherten Daten |
+| `jobs`, `record` | flüchtiger Job-/Aufzeichnungs-Status |
+| `domains` | braucht einen Rollen-Parameter; die Inhalte stehen in `roles-linked.json` |
+| PDF-, öffentliche und Statistik-Endpunkte | abgeleitete Darstellungen bzw. Duplikate der gesicherten Daten |
+| Verläufe pro Objekt (`/{id}/feed`), Dateiinhalte der Anhänge | nicht im Umfang (Datensicherung für die Migration) |
+
+## Paginierung
+
+Angefordert wird mit `page` und `count` (Seitengrösse 100), wie in der veröffentlichten Spec
+dokumentiert. Das Ende einer Liste ergibt sich, in dieser Reihenfolge, aus `pagination.pagesCount`,
+aus `pagination.nextPage` oder, wenn die Antwort keinerlei Paginierungs-Metadaten hat, aus der
+ersten leeren Seite. Das ältere Format `meta.pagination.total_pages` wird weiterhin verstanden.
+
+Schutzmechanismen:
+
+- **Wiederholte Seite:** liefert die API trotz gemeldeter weiterer Seiten nur bereits bekannte
+  Einträge (der `page`-Parameter wird ignoriert), schlägt der Endpunkt fehl, statt eine Liste
+  mit Duplikaten zu speichern.
+- **Vollständigkeit:** meldet die API in `pagination.totalItems` mehr Einträge als geliefert
+  wurden, werden die Daten geschrieben, aber im Manifest als `incomplete` markiert (Exit-Code 1).
+- **Obergrenzen:** max. 500 Seiten und 1 Mio. Einträge pro Endpunkt.
 
 ## verify-Subcommand
 
@@ -119,7 +165,8 @@ Siehe [docs/supply-chain.md](supply-chain.md) für die vollständige Verifikatio
 - Pro Endpunkt: max. 3 Retries mit Exponential Backoff (2s, 4s, 8s)
 - HTTP 429 und 5xx: Retry mit Backoff; HTTP 4xx (außer 429): kein Retry
 - Fehlgeschlagener Endpunkt bricht den Lauf **nicht** ab
-- Fehlschläge werden im Manifest als `"status": "failed"` markiert
+- Fehlschläge werden im Manifest als `"status": "failed"` markiert, unvollständige Listen als
+  `"status": "incomplete"` (Datei geschrieben und signiert, aber weniger Einträge als gemeldet)
 - Logging via `slog` (strukturiertes Logging, kein separates Log-File)
 - Response-Body begrenzt auf 100 MiB (Schutz vor Memory-Exhaustion)
 
@@ -128,25 +175,13 @@ Siehe [docs/supply-chain.md](supply-chain.md) für die vollständige Verifikatio
 ```
 backup/
   2026-03-06T02-00-00/
+    organization.json
     circles.json
+    circles-linked.json        # mitgelieferte verknüpfte Objekte, sofern vorhanden
     roles.json
+    roles-linked.json          # u. a. Verantwortlichkeiten, Domains, Richtlinien
     members.json
-    policies.json
-    meetings.json
-    okrs.json
-    node-okrs.json
-    tasks.json
-    boards.json
-    columns.json
-    checklists.json
-    metrics.json
-    publications.json
-    categories.json
-    tensions.json
-    attachments.json
-    chartviews.json
-    calendars.json
-    backups.json
+    ...                        # eine Datei pro Endpunkt (47), je nach Antwort plus -linked
     backup-manifest.json
     backup-manifest.sig
 ```
@@ -162,13 +197,19 @@ backup/
     {
       "name": "circles.json",
       "sha256": "abc123...",
-      "records": 42,
       "status": "ok"
+    },
+    {
+      "name": "roles.json",
+      "sha256": "def456...",
+      "status": "incomplete",
+      "error": "retrieved 100 of 140 items the API reported (40 missing)"
     }
   ],
   "summary": {
-    "total_files": 21,
-    "successful": 21,
+    "total_files": 2,
+    "successful": 1,
+    "incomplete": 1,
     "failed": 0
   }
 }
