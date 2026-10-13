@@ -46,7 +46,7 @@ holaspirit-backup/
 │   └── workflows/
 │       ├── security.yml         # govulncheck + gosec + Tests
 │       ├── build.yml            # Matrix-Build (3 Plattformen)
-│       ├── release.yml          # Security-Gate → SLSA L2 + cosign + SHA256
+│       ├── release.yml          # Security-Gate → SLSA L2 + L3 + cosign + SHA256
 │       ├── cbom.yml             # Dependency-SBoM + CBOM + NIST-conftest
 │       ├── scorecard.yml        # OpenSSF Scorecard (wöchentlich)
 │       ├── dependency-review.yml # CVE- + Lizenz-Prüfung bei PRs
@@ -107,6 +107,7 @@ Bei jedem `v*`-Tag läuft die folgende Kette:
 
 1. **Build** — 3 Binaries (linux/amd64, linux/arm64, windows/amd64) mit `ldflags -X main.version`
 2. **SLSA L2 Attestation** — `actions/attest-build-provenance` erzeugt signierte Provenance pro Binary
+   **SLSA L3 Build** — parallel baut der slsa-github-generator `backup-linux-amd64-slsa3` isoliert, mit signierter `.intoto.jsonl`-Provenance
 3. **cosign Signing** — Keyless-Signatur via GitHub OIDC, Bundle als Release-Asset
 4. **SHA256SUMS** — Checksummen-Datei für schnelle Integritätsprüfung
 5. **GitHub Release** — alle Artefakte + Bundles + SHA256SUMS veröffentlicht

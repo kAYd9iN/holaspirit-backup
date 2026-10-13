@@ -54,7 +54,8 @@ go build -o backup ./cmd/backup
 |----------|---------|---------|
 | `security-and-quality.yml` | push + PR | govulncheck, gosec, go test -race |
 | `build.yml` | push main + tags + PR | 3 platform binaries |
-| `release.yml` | `v*` tags | GitHub Release, SLSA provenance, cosign signing |
+| `release.yml` | `v*` tags | Security gate → 3 builds (SLSA L2 attestation) + SLSA L3 build of linux/amd64 → cosign → GitHub Release |
+| `go-ossf-slsa3-publish.yml` | manual | Test run of the SLSA L3 builder. Keep it on the `@vX.Y.Z` tag — a SHA ref fails ("Invalid ref") |
 | `cbom.yml` | push + PR | Dependency SBoM (`sbom.cdx.json`) + CBOM validation + conftest NIST check (informational) |
 | `scorecard.yml` | push main + weekly | OpenSSF Scorecard (`SCORECARD_ENABLED=true`; `SCORECARD_TOKEN` optional) |
 | `dependency-review.yml` | PR + merge_group | Block high-severity CVEs + license allowlist |

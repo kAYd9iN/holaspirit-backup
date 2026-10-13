@@ -77,6 +77,7 @@ Optionen:
 | Maßnahme | Details |
 |----------|---------|
 | SLSA Level 2 | Provenance-Attestation via `actions/attest-build-provenance`, verifizierbar mit `gh attestation verify` |
+| SLSA Level 3 | Linux-amd64-Binary isoliert gebaut via slsa-github-generator (`backup-linux-amd64-slsa3` + `.intoto.jsonl`), verifizierbar mit `slsa-verifier` |
 | cosign | Keyless-Signing aller Release-Binaries via Sigstore OIDC |
 | HMAC-SHA-256 | Manifest-Signatur jedes Backups (`backup-manifest.sig`) |
 | GET-only API | HTTP-Client exponiert nur `Get()` — kein Schreibzugriff möglich |

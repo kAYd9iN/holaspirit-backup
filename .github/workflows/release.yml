@@ -124,9 +124,26 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
+  # SLSA Level 3: a hermetic, isolated build of linux/amd64 with signed
+  # provenance (config: .slsa-goreleaser.yml). Runs only after the security
+  # gate. The binary and its .intoto.jsonl provenance ship as extra assets,
+  # verifiable with slsa-verifier.
+  slsa-build:
+    name: SLSA L3 build
+    needs: security-gate
+    permissions:
+      id-token: write   # sign the provenance
+      contents: write   # declared by the builder's upload-assets job (skipped: upload-assets false)
+      actions: read     # read the workflow path for provenance
+    # Must be a vX.Y.Z tag, not a commit SHA — the builder rejects SHA refs.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
+    with:
+      go-version-file: go.mod
+      upload-assets: false
+
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [build, slsa-build]
     runs-on: ubuntu-latest
     # Only this job writes to the repo (creates the Release); id-token for cosign.
     permissions:
@@ -145,7 +162,8 @@ jobs:
       - name: Generate SHA256 checksums
         run: |
           cd dist/
-          sha256sum backup-linux-amd64 backup-linux-arm64 backup-windows-amd64.exe > SHA256SUMS
+          sha256sum backup-linux-amd64 backup-linux-arm64 backup-windows-amd64.exe \
+            backup-linux-amd64-slsa3 > SHA256SUMS
           cat SHA256SUMS
 
       - name: Install cosign
@@ -156,7 +174,8 @@ jobs:
           for binary in \
             dist/backup-linux-amd64 \
             dist/backup-linux-arm64 \
-            dist/backup-windows-amd64.exe; do
+            dist/backup-windows-amd64.exe \
+            dist/backup-linux-amd64-slsa3; do
             cosign sign-blob \
               --yes \
               --bundle "${binary}.bundle" \
@@ -176,4 +195,7 @@ jobs:
             dist/backup-linux-amd64.bundle \
             dist/backup-linux-arm64.bundle \
             dist/backup-windows-amd64.exe.bundle \
+            dist/backup-linux-amd64-slsa3 \
+            dist/backup-linux-amd64-slsa3.bundle \
+            dist/*.intoto.jsonl \
             dist/SHA256SUMS

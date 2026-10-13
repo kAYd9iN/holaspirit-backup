@@ -18,6 +18,7 @@
 - **Response-Limit:** HTTP-Responses auf 100 MiB begrenzt (Schutz vor Memory-Exhaustion)
 - **Pagination-Guard:** Max. 500 Seiten **und** max. 1 Mio. Items pro Endpunkt (Schutz vor endlosen Loops und Memory-Exhaustion)
 - **SLSA Level 2:** Jedes Release-Binary erhält eine signierte Provenance-Attestation
+- **SLSA Level 3:** Das Linux-amd64-Binary wird zusätzlich isoliert vom slsa-github-generator gebaut (signierte Provenance, prüfbar mit `slsa-verifier`)
 - **cosign Keyless Signing:** Release-Binaries werden via Sigstore OIDC signiert
 - **OpenSSF Scorecard:** Wöchentliches automatisches Security-Scoring des Repos
 - **Dependency Review:** PRs werden auf neue hochschwere CVEs **und** auf nicht-permissive Lizenzen geprüft (Allowlist: MIT/Apache-2.0/BSD/ISC)
@@ -82,7 +83,7 @@ dass ein Bug oder eine fehlerhafte Erweiterung Holaspirit-Daten verändert.
 |----------|---------|-------|
 | `security.yml` | Push, PR | govulncheck + gosec + Tests (race detector) |
 | `build.yml` | Push main, Tags, PR | Matrix-Build (linux/amd64, linux/arm64, windows/amd64) |
-| `release.yml` | `v*` Tags | Security-Gate → SLSA L2 Attestation + cosign Signing + SHA256 |
+| `release.yml` | `v*` Tags | Security-Gate → SLSA L2 Attestation + SLSA L3 Build (linux/amd64) + cosign Signing + SHA256 |
 | `cbom.yml` | Push, PR | Dependency-SBoM + CBOM-Validierung + conftest-NIST-Check (informativ) |
 | `scorecard.yml` | Push main, wöchentlich | OpenSSF Scorecard Security-Scoring |
 | `dependency-review.yml` | PRs, merge_group | Neue Abhängigkeiten auf CVEs + Lizenz-Allowlist prüfen |
