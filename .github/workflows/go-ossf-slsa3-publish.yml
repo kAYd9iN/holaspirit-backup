@@ -1,9 +1,11 @@
 name: SLSA Go releaser
 
+# Manual test run only. Releases get their SLSA L3 provenance from the
+# slsa-build job in release.yml, behind the security gate. (A `release: created`
+# trigger never fired: release.yml creates releases with GITHUB_TOKEN, and
+# events caused by GITHUB_TOKEN don't start other workflows.)
 on:
   workflow_dispatch:
-  release:
-    types: [created]
 
 permissions: read-all
 
@@ -13,9 +15,10 @@ jobs:
       id-token: write   # to sign provenance
       contents: write   # required by the called builder's declared permissions
       actions: read     # to read the workflow path for provenance
-    # Pin the external reusable workflow to the commit behind v2.1.0 so the
-    # write-scoped token is not exposed to a mutable semantic-version tag.
-    uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a
+    # Must be a vX.Y.Z tag, not a commit SHA: the builder verifies its own ref
+    # and fails with "Invalid ref ... Expected ref of the form refs/tags/vX.Y.Z"
+    # when SHA-pinned. This is the documented exception to SHA pinning.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
     with:
       go-version-file: go.mod
       upload-assets: false

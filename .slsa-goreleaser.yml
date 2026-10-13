@@ -6,7 +6,9 @@ goos: linux
 goarch: amd64
 
 main: ./cmd/backup/
-binary: backup-linux-amd64
+# Distinct name: release.yml also builds an artifact called backup-linux-amd64,
+# and two artifacts with the same name in one run make the upload fail.
+binary: backup-linux-amd64-slsa3
 
 # No -mod=vendor flag: the builder's flag allowlist rejects it, and Go uses the
 # checked-in vendor/ directory automatically (go.mod declares go >= 1.14).

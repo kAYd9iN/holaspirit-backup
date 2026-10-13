@@ -28,6 +28,7 @@ Release-Security-Gate (release.yml)
 Release-Artefakte
     │
     ├─ SLSA L2 Provenance-Attestation (GitHub Attestation Registry)
+    ├─ SLSA L3 Build linux/amd64 (slsa-github-generator, .intoto.jsonl)
     ├─ cosign Bundle (Keyless-Signatur via Sigstore/OIDC)
     ├─ SHA256SUMS (Checksummen)
     └─ SBoM + CBOM (CycloneDX, als Artifact)
@@ -72,6 +73,31 @@ for f in backup-linux-amd64 backup-linux-arm64 backup-windows-amd64.exe; do
   gh attestation verify "$f" --repo kAYd9iN/holaspirit-backup
 done
 ```
+
+## SLSA Level 3 (linux/amd64)
+
+Zusätzlich baut `release.yml` im Job `slsa-build` (läuft erst nach dem Security-Gate) das
+Linux-amd64-Binary mit dem Go-Builder des
+[slsa-github-generator](https://github.com/slsa-framework/slsa-github-generator): ein isolierter
+Build, dessen signierte Provenance nicht vom Repository selbst erzeugt werden kann.
+Konfiguration: `.slsa-goreleaser.yml`.
+
+Release-Assets: `backup-linux-amd64-slsa3` und `backup-linux-amd64-slsa3.intoto.jsonl`.
+
+```bash
+# slsa-verifier installieren: https://github.com/slsa-framework/slsa-verifier
+slsa-verifier verify-artifact backup-linux-amd64-slsa3 \
+  --provenance-path backup-linux-amd64-slsa3.intoto.jsonl \
+  --source-uri github.com/kAYd9iN/holaspirit-backup \
+  --source-tag <release-tag>
+
+# Erwartete Ausgabe:
+# PASSED: SLSA verification passed
+```
+
+> **Hinweis:** Der Builder muss per Versions-Tag (`@v2.1.0`) referenziert werden, nicht per
+> Commit-SHA. Er prüft seine eigene Referenz und bricht sonst mit `Invalid ref … Expected ref of
+> the form refs/tags/vX.Y.Z` ab. Das ist die einzige bewusste Ausnahme vom SHA-Pinning.
 
 ## cosign Keyless Signing
 
