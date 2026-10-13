@@ -1,6 +1,6 @@
 # holaspirit-backup
 
-Backup tool for Holaspirit organisational data. Fetches 21 GET-only endpoints → timestamped JSON files + HMAC-SHA-256 signed manifest.
+Backup tool for Holaspirit organisational data. Fetches 47 GET-only organization endpoints (every page, plus the side-loaded `linked` entities) → timestamped JSON files + HMAC-SHA-256 signed manifest.
 
 ## Commands
 
@@ -22,10 +22,10 @@ go build -o backup ./cmd/backup
 
 | Path | Purpose |
 |------|---------|
-| `internal/api/endpoints.go` | All 21 endpoints (edit here to add/remove) |
+| `internal/api/endpoints.go` | All 47 endpoints + deliberate exclusions (edit here to add/remove) |
 | `internal/api/client.go` | HTTP client — GET-only, explicit TLS≥1.2, rate limiter 250/5min, retry 429+5xx |
-| `internal/api/pagination.go` | Page accumulation with url.Values query + per-endpoint item cap |
-| `internal/backup/backup.go` | Worker pool (5), fetches all endpoints |
+| `internal/api/pagination.go` | Pagination per the published spec (`page`/`count`, top-level `pagination.pagesCount`/`nextPage`/`totalItems`; legacy `meta.pagination` still understood), `linked` de-duplication, repeated-page and completeness detection, item cap |
+| `internal/backup/runner.go` | Worker pool (5), fetches all endpoints, writes `<name>.json` + `<name>-linked.json` |
 | `internal/backup/manifest.go` | SHA256 per file + HMAC-SHA-256 .sig, error sanitization, hex-decoded verify |
 | `internal/storage/writer.go` | Timestamped dirs, 0600 files, path sanitising + symlink resolution |
 | `docs/api-snapshot.json` | Baseline of Holaspirit API field structure (for drift detection) |
@@ -136,7 +136,10 @@ without a key, strict mode incompatible with bot commits).
 
 ## Extending: Adding a New Endpoint
 
-1. Add entry to `AllEndpoints()` in `internal/api/endpoints.go`
-2. Run `go test ./internal/api/` to verify
-3. Update `docs/api-snapshot.json` baseline: run `scripts/check-api-schema.sh` locally
-4. Commit + push → CI validates
+1. Add entry to `orgCollections` in `internal/api/endpoints.go` (`paginated: true` only if the
+   spec's response schema has a `pagination` block)
+2. Add the same name → path to `ENDPOINTS` in `scripts/check-api-schema.sh`
+   (`TestDriftCheckCoversAllEndpoints` fails otherwise)
+3. Run `go test ./internal/api/` to verify
+4. Update `docs/api-snapshot.json` baseline: run `scripts/check-api-schema.sh` locally
+5. Commit + push → CI validates

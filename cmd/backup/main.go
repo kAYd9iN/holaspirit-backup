@@ -126,12 +126,26 @@ func main() {
 			slog.Warn("endpoint failed", "name", safeName, "error", sanitizeLog(r.Err.Error()))
 			manifest.AddFailedFile(r.Name, r.Err)
 			exitCode = 1
-		} else {
-			slog.Info("endpoint ok", "name", safeName, "records", r.Records)
-			filePath := filepath.Join(w.Dir(), r.Name+".json")
-			if err := manifest.AddFile(filePath); err != nil {
-				slog.Warn("manifest hash failed", "name", safeName, "error", sanitizeLog(err.Error()))
+			continue
+		}
+		for _, f := range r.Files {
+			filePath := filepath.Join(w.Dir(), f)
+			add := manifest.AddFile
+			if r.Incomplete != nil {
+				add = func(p string) error { return manifest.AddIncompleteFile(p, r.Incomplete) }
 			}
+			if err := add(filePath); err != nil {
+				slog.Warn("manifest hash failed", "file", sanitizeLog(f), "error", sanitizeLog(err.Error()))
+			}
+		}
+		if r.Incomplete != nil {
+			// Data was written, but the API announced more items than it
+			// delivered — never let a partial backup pass as complete.
+			slog.Warn("endpoint incomplete", "name", safeName, "records", r.Records,
+				"error", sanitizeLog(r.Incomplete.Error()))
+			exitCode = 1
+		} else {
+			slog.Info("endpoint ok", "name", safeName, "records", r.Records, "files", len(r.Files))
 		}
 	}
 

@@ -5,7 +5,11 @@ mit SHA256-Integritätsmanifest und HMAC-SHA-256-Signatur.
 
 ## Features
 
-- Sichert 21 Holaspirit-Endpunkte (GET-only, kein Schreibzugriff)
+- Sichert 47 Organisations-Endpunkte der Holaspirit-API (GET-only, kein Schreibzugriff):
+  jede Liste vollständig über alle Seiten, inklusive der mitgelieferten verknüpften Inhalte
+  (`*-linked.json`, z. B. Verantwortlichkeiten, Domains und Richtlinien der Rollen)
+- Vollständigkeitsprüfung: meldet die API mehr Einträge als geliefert wurden, wird das im
+  Manifest als `incomplete` markiert und der Lauf endet mit Exit-Code 1
 - SHA256-Hashes pro Datei + HMAC-SHA-256-Manifest-Signatur
 - Bounded Worker Pool (5 Goroutinen), Rate-Limiter (250 req / 5 min)
 - Plattform-Binaries: Linux amd64/arm64, Windows amd64
@@ -44,6 +48,11 @@ cosign verify-blob \
 ```powershell
 cmdkey /generic:holaspirit-backup /user:api /pass:api:DEIN_TOKEN_HIER
 ```
+
+> Für eine vollständige Sicherung muss der Token zu einem **Holaspirit-Admin** gehören.
+> Webhooks, SAML-Konfiguration u. a. sind sonst nicht lesbar; diese Endpunkte schlagen dann
+> fehl (Exit-Code 1). Was bewusst nicht gesichert wird, steht in
+> [docs/architecture.md](docs/architecture.md#was-gesichert-wird).
 
 **Backup ausführen:**
 

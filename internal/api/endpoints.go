@@ -20,39 +20,98 @@ func ValidateOrgID(orgID string) error {
 
 // Endpoint describes a single API resource to back up.
 type Endpoint struct {
-	Name      string // used as filename (e.g. "circles" -> circles.json)
-	Path      string // full API path
+	Name string // used as filename (e.g. "circles" -> circles.json); [a-z0-9-] only
+	Path string // full API path
+	// Paginated marks list endpoints whose published response schema carries
+	// pagination metadata. They are fetched page by page and their `linked`
+	// entities are written to <name>-linked.json. Other endpoints are stored
+	// as the complete response.
 	Paginated bool
 }
 
-// AllEndpoints returns all 21 endpoints to back up for a given organization ID.
+// orgCollections lists every organization-level GET collection of the
+// published Holaspirit API that holds organization data, as name → path below
+// /api/organizations/{id}. Keep it in sync with the ENDPOINTS map in
+// scripts/check-api-schema.sh (enforced by TestDriftCheckCoversAllEndpoints).
+//
+// Deliberately not backed up (see docs/architecture.md):
+//   - tokens: API secrets
+//   - stripe/current: billing, not organization data
+//   - favorites: personal data of the token's user
+//   - search-global, search/mention, migration/domain-availability: queries, not stored data
+//   - jobs, record: transient job/recording state
+//   - domains: needs a role parameter; the content is in roles-linked.json
+var orgCollections = []struct {
+	name, sub string
+	paginated bool
+}{
+	{"organization", "", false},
+	{"circles", "/circles", true},
+	{"circles-timespent", "/circles-timespent", true},
+	{"roles", "/roles", true},
+	{"members", "/members", true},
+	{"tensions", "/tensions", true},
+	{"policies", "/policies", true},
+	{"meetings", "/meetings", true},
+	// objectives/keyresults were removed from the published API —
+	// replaced by the OKR endpoints (key results are nested in OKRs).
+	{"okrs", "/okrs", true},
+	{"node-okrs", "/node-okrs", true},
+	{"tasks", "/tasks", true},
+	{"boards", "/boards", true},
+	{"columns", "/columns", true},
+	{"checklists", "/checklists", true},
+	{"metrics", "/metrics", true},
+	{"publications", "/publications", true},
+	{"categories", "/categories", true},
+	{"attachments", "/attachments", true},
+	{"chartviews", "/chartviews", true},
+	{"calendars", "/calendars", true},
+	{"backups", "/backups", true},
+
+	// Governance structure and configuration
+	{"custom-fields", "/custom-fields", true},
+	{"roles-custom-fields", "/roles-custom-fields", true},
+	{"roles-relations", "/roles/relations", false},
+	{"roles-diagram", "/roles-diagram", false},
+	{"members-hierarchy", "/members-hierarchy", true},
+	{"labels", "/labels", true},
+	{"highlights", "/highlights", true},
+	{"timeframes", "/timeframes", true},
+	{"templates", "/templates", false},
+	{"meetingtemplates", "/meetingtemplates", true},
+	{"meetings-recurrences", "/meetings/recurrences", true},
+	{"translations", "/translations", true},
+
+	// Publications: revision history and comment threads
+	{"publications-revision", "/publications/revision", true},
+	{"comment-feeds", "/comment-feeds", true},
+
+	// Node (tree) views of the organization
+	{"node-boards", "/node-boards", true},
+	{"node-circles", "/node-circles", true},
+	{"node-meetings", "/node-meetings", true},
+	{"node-members", "/node-members", true},
+	{"node-roles", "/node-roles", true},
+	{"node-roles-custom-fields", "/node-roles-custom-fields", true},
+	{"node-roles-diagram", "/node-roles-diagram", false},
+	{"node-tasks", "/node-tasks", true},
+	{"node-tensions", "/node-tensions", true},
+	{"node-translations", "/node-translations", true},
+
+	// Integrations and authentication setup (admin token required)
+	{"webhooks", "/webhooks", true},
+	{"authentication-saml", "/authentication/saml", false},
+}
+
+// AllEndpoints returns every endpoint to back up for a given organization ID.
 func AllEndpoints(orgID string) []Endpoint {
 	base := fmt.Sprintf("/api/organizations/%s", orgID)
-	return []Endpoint{
-		{Name: "organization", Path: fmt.Sprintf("/api/organizations/%s", orgID), Paginated: false},
-		{Name: "circles", Path: base + "/circles", Paginated: true},
-		{Name: "circles-timespent", Path: base + "/circles-timespent", Paginated: true},
-		{Name: "roles", Path: base + "/roles", Paginated: true},
-		{Name: "members", Path: base + "/members", Paginated: true},
-		{Name: "tensions", Path: base + "/tensions", Paginated: true},
-		{Name: "policies", Path: base + "/policies", Paginated: true},
-		{Name: "meetings", Path: base + "/meetings", Paginated: true},
-		// objectives/keyresults were removed from the published API —
-		// replaced by the OKR endpoints (key results are nested in OKRs).
-		{Name: "okrs", Path: base + "/okrs", Paginated: true},
-		{Name: "node-okrs", Path: base + "/node-okrs", Paginated: true},
-		{Name: "tasks", Path: base + "/tasks", Paginated: true},
-		{Name: "boards", Path: base + "/boards", Paginated: true},
-		{Name: "columns", Path: base + "/columns", Paginated: true},
-		{Name: "checklists", Path: base + "/checklists", Paginated: true},
-		{Name: "metrics", Path: base + "/metrics", Paginated: true},
-		{Name: "publications", Path: base + "/publications", Paginated: true},
-		{Name: "categories", Path: base + "/categories", Paginated: true},
-		{Name: "attachments", Path: base + "/attachments", Paginated: true},
-		{Name: "chartviews", Path: base + "/chartviews", Paginated: true},
-		{Name: "calendars", Path: base + "/calendars", Paginated: true},
-		{Name: "backups", Path: base + "/backups", Paginated: true},
+	eps := make([]Endpoint, 0, len(orgCollections))
+	for _, c := range orgCollections {
+		eps = append(eps, Endpoint{Name: c.name, Path: base + c.sub, Paginated: c.paginated})
 	}
+	return eps
 }
 
 // MeResponse is the response from GET /api/me.
