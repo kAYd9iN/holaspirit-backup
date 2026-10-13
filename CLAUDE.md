@@ -6,7 +6,7 @@ Backup tool for Holaspirit organisational data. Fetches 21 GET-only endpoints �
 
 ```bash
 # Run tests
-GOTOOLCHAIN=go1.25.8 go test ./...
+go test ./...
 
 # Build
 go build -o backup ./cmd/backup
@@ -88,7 +88,9 @@ api-update-check (daily 06:00 UTC — no credentials needed)
 
 - GitHub: `kAYd9iN/holaspirit-backup` (public)
 - Versioning: 0ver — major stays 0, e.g. `v0.2.0` (see https://0ver.org/)
-- go.mod: `go 1.25.8`, but CI uses `go-version: '1.26'` — do not change
+- go.mod: `go 1.26.9` (minimum patched toolchain; the SLSA builder reads it via `go-version-file`).
+  CI uses `go-version: '1.26'` + `check-latest: true` so every run gets the newest 1.26 patch —
+  without it setup-go uses the runner's cached Go, which made govulncheck fail (GO-2026-6617)
 
 ## Dependency Updates (Dependabot)
 
@@ -126,6 +128,6 @@ without a key, strict mode incompatible with bot commits).
 ## Extending: Adding a New Endpoint
 
 1. Add entry to `AllEndpoints()` in `internal/api/endpoints.go`
-2. Run `GOTOOLCHAIN=go1.25.8 go test ./internal/api/` to verify
+2. Run `go test ./internal/api/` to verify
 3. Update `docs/api-snapshot.json` baseline: run `scripts/check-api-schema.sh` locally
 4. Commit + push → CI validates
