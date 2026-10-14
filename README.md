@@ -74,7 +74,8 @@ backup verify --dir <path>
 
 Optionen:
   --output PATH     Backup-Zielverzeichnis (Standard: ./backup)
-  --org-id ID       Organisations-ID (auto-detected)
+  --org-id ID       Organisations-ID (Standard: $HOLASPIRIT_ORG_ID; sonst via /api/me —
+                    Organisations-Tokens dürfen /api/me oft nicht lesen, dann angeben)
   --dry-run         Verbindung testen ohne Daten zu schreiben
   --timeout MIN     Gesamt-Timeout in Minuten (Standard: 120)
   --audit           Hostname + Benutzer im Manifest erfassen (Audit-Trail)

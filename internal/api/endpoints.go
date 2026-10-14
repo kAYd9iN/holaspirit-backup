@@ -27,6 +27,26 @@ type Endpoint struct {
 	// entities are written to <name>-linked.json. Other endpoints are stored
 	// as the complete response.
 	Paginated bool
+	// ByCreated: fetch in createdAfter/createdBefore time windows, because the
+	// endpoint can hold more than ResultCap items (tensions).
+	ByCreated bool
+	// Optional, when set, explains why the endpoint may legitimately be absent
+	// for an organization (a feature that is not enabled). HTTP 400/403/404 then
+	// marks it "unavailable" instead of failing the backup.
+	Optional string
+}
+
+// byCreated lists endpoints that exceeded ResultCap in a live run and support
+// the createdAfter/createdBefore filters.
+var byCreated = map[string]bool{"tensions": true, "node-tensions": true}
+
+// optional lists feature-dependent endpoints (live run: 404/400 for an
+// organization without these features).
+var optional = map[string]string{
+	"translations":        "translation feature not enabled for this organization",
+	"node-translations":   "translation feature not enabled for this organization",
+	"chartviews":          "saved chart views not available for this token/organization",
+	"authentication-saml": "SAML single sign-on not configured",
 }
 
 // orgCollections lists every organization-level GET collection of the
@@ -109,7 +129,8 @@ func AllEndpoints(orgID string) []Endpoint {
 	base := fmt.Sprintf("/api/organizations/%s", orgID)
 	eps := make([]Endpoint, 0, len(orgCollections))
 	for _, c := range orgCollections {
-		eps = append(eps, Endpoint{Name: c.name, Path: base + c.sub, Paginated: c.paginated})
+		eps = append(eps, Endpoint{Name: c.name, Path: base + c.sub, Paginated: c.paginated,
+			ByCreated: byCreated[c.name], Optional: optional[c.name]})
 	}
 	return eps
 }

@@ -3,8 +3,10 @@ package backup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/kAYd9iN/holaspirit-backup/internal/api"
 	"github.com/kAYd9iN/holaspirit-backup/internal/storage"
@@ -23,10 +25,15 @@ type Result struct {
 	Files []string
 	// Err is set when the endpoint could not be backed up; no file was written.
 	Err error
-	// Incomplete is set when the files were written but the API announced
-	// more items than were retrieved. Partial data is kept — it beats none —
-	// but the run must not count as a full success.
+	// Incomplete is set when the files were written but not everything could
+	// be retrieved (fewer items than announced, or the API's result cap was
+	// hit). Partial data is kept — it beats none — but the run must not count
+	// as a full success.
 	Incomplete error
+	// Unavailable is set when an optional endpoint does not exist for this
+	// organization (feature not enabled). Nothing was written, and that is not
+	// a failure.
+	Unavailable error
 }
 
 // RunFetchers fetches all endpoints concurrently using a bounded worker pool.
@@ -64,25 +71,61 @@ func RunFetchers(ctx context.Context, client *api.Client, w *storage.Writer, end
 }
 
 func fetch(ctx context.Context, client *api.Client, w *storage.Writer, ep api.Endpoint) Result {
+	res := fetchEndpoint(ctx, client, w, ep)
+	if res.Err != nil && ep.Optional != "" {
+		var se *api.StatusError
+		if errors.As(res.Err, &se) && (se.Code == 400 || se.Code == 403 || se.Code == 404) {
+			return Result{Name: ep.Name, Unavailable: fmt.Errorf("%s (HTTP %d)", ep.Optional, se.Code)}
+		}
+	}
+	return res
+}
+
+// fetchRaw stores the complete response of a single request (data, linked,
+// meta), so nothing the endpoint returns is dropped.
+func fetchRaw(ctx context.Context, client *api.Client, w *storage.Writer, ep api.Endpoint) Result {
+	body, err := client.Get(ctx, ep.Path)
+	if err != nil {
+		return Result{Name: ep.Name, Err: err}
+	}
+	data, err := json.Marshal([]json.RawMessage{body})
+	if err != nil {
+		return Result{Name: ep.Name, Err: err}
+	}
+	if err := w.WriteJSON(ep.Name, data); err != nil {
+		return Result{Name: ep.Name, Err: err}
+	}
+	return Result{Name: ep.Name, Records: 1, Files: []string{ep.Name + ".json"}}
+}
+
+func fetchEndpoint(ctx context.Context, client *api.Client, w *storage.Writer, ep api.Endpoint) Result {
 	if !ep.Paginated {
-		// Stored as the complete response (data, linked, meta), so nothing
-		// the endpoint returns is dropped.
-		body, err := client.Get(ctx, ep.Path)
-		if err != nil {
-			return Result{Name: ep.Name, Err: err}
-		}
-		data, err := json.Marshal([]json.RawMessage{body})
-		if err != nil {
-			return Result{Name: ep.Name, Err: err}
-		}
-		if err := w.WriteJSON(ep.Name, data); err != nil {
-			return Result{Name: ep.Name, Err: err}
-		}
-		return Result{Name: ep.Name, Records: 1, Files: []string{ep.Name + ".json"}}
+		return fetchRaw(ctx, client, w, ep)
 	}
 
-	col, err := api.FetchAllPages(ctx, client, ep.Path)
+	var col *api.Collection
+	var err error
+	windowed := false
+	note := ""
+	if ep.ByCreated {
+		col, err = api.FetchByCreatedWindows(ctx, client, ep.Path, time.Now())
+		windowed = err == nil
+		if errors.Is(err, api.ErrNoDateFilter) {
+			note = "; time-window paging not possible: " + err.Error()
+			col, err = api.FetchAllPages(ctx, client, ep.Path)
+		}
+	} else {
+		col, err = api.FetchAllPages(ctx, client, ep.Path)
+	}
 	if err != nil {
+		// Some list endpoints reject the paging parameters (HTTP 400 on the
+		// first page); retry once as a plain request.
+		var se *api.StatusError
+		if errors.As(err, &se) && se.Code == 400 {
+			if raw := fetchRaw(ctx, client, w, ep); raw.Err == nil {
+				return raw
+			}
+		}
 		return Result{Name: ep.Name, Err: fmt.Errorf("fetch %s: %w", ep.Name, err)}
 	}
 
@@ -106,9 +149,15 @@ func fetch(ctx context.Context, client *api.Client, w *storage.Writer, ep api.En
 		res.Files = append(res.Files, ep.Name+"-linked.json")
 	}
 
-	if missing := col.Missing(); missing > 0 {
+	switch missing := col.Missing(); {
+	case missing > 0:
 		res.Incomplete = fmt.Errorf("retrieved %d of %d items the API reported (%d missing)",
 			len(col.Items), col.Reported, missing)
+	case !windowed && len(col.Items) >= api.ResultCap:
+		// The API stops at ResultCap and also caps its reported total there,
+		// so "complete" cannot be confirmed.
+		res.Incomplete = fmt.Errorf("reached the API limit of %d items — items beyond it are not retrievable this way%s",
+			api.ResultCap, note)
 	}
 	return res
 }

@@ -20,6 +20,12 @@ const (
 	maxBodyBytes = 100 * 1024 * 1024 // 100 MiB per response — prevents memory exhaustion
 )
 
+// StatusError is a non-retryable 4xx response. Callers use errors.As to tell
+// "not found" or "forbidden" apart from other failures.
+type StatusError struct{ Code int }
+
+func (e *StatusError) Error() string { return fmt.Sprintf("client error HTTP %d", e.Code) }
+
 // Client is an authenticated HTTP client for the Holaspirit API.
 // It only supports GET requests — no Post(), Patch(), or Delete() methods exist.
 type Client struct {
@@ -111,7 +117,7 @@ func (c *Client) doGet(ctx context.Context, path string) ([]byte, bool, error) {
 	case resp.StatusCode >= 500:
 		return nil, true, fmt.Errorf("server error HTTP %d", resp.StatusCode)
 	case resp.StatusCode >= 400:
-		return nil, false, fmt.Errorf("client error HTTP %d", resp.StatusCode)
+		return nil, false, &StatusError{Code: resp.StatusCode}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))

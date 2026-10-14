@@ -265,3 +265,29 @@ func TestManifest_IncompleteFilesCountedAndVerified(t *testing.T) {
 		t.Fatalf("tampering with an incomplete file must be detected, got %v", err)
 	}
 }
+
+// Unavailable endpoints are counted separately and skipped by verify (no file).
+func TestManifest_UnavailableCountedAndSkippedByVerify(t *testing.T) {
+	dir := t.TempDir()
+	ok := filepath.Join(dir, "circles.json")
+	os.WriteFile(ok, []byte(`[]`), 0600)
+	m := backup.NewManifest("org", "dev", time.Now())
+	m.Root = dir
+	if err := m.AddFile(ok); err != nil {
+		t.Fatal(err)
+	}
+	m.AddUnavailable("translations", fmtErr("feature off (HTTP 404)"))
+	path := filepath.Join(dir, "backup-manifest.json")
+	if err := m.Write(path, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	var got backup.Manifest
+	raw, _ := os.ReadFile(path)
+	json.Unmarshal(raw, &got)
+	if s := got.Summary; s.Successful != 1 || s.Unavailable != 1 || s.Failed != 0 {
+		t.Errorf("summary = %+v", s)
+	}
+	if err := backup.VerifyManifest(path, "tok"); err != nil {
+		t.Errorf("verify must skip unavailable entries: %v", err)
+	}
+}
