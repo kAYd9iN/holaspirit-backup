@@ -43,7 +43,10 @@ type FileEntry struct {
 	Name    string `json:"name"`
 	SHA256  string `json:"sha256"`
 	Records int    `json:"records,omitempty"`
-	Status  string `json:"status"` // "ok", "incomplete" (written, but fewer items than the API reported) or "failed"
+	// "ok"; "incomplete" (written, but not everything was retrievable);
+	// "unavailable" (optional feature not enabled — nothing to back up);
+	// or "failed".
+	Status  string `json:"status"`
 	Error   string `json:"error,omitempty"`
 }
 
@@ -51,8 +54,9 @@ type FileEntry struct {
 type Summary struct {
 	TotalFiles int `json:"total_files"`
 	Successful int `json:"successful"`
-	Incomplete int `json:"incomplete"`
-	Failed     int `json:"failed"`
+	Incomplete  int `json:"incomplete"`
+	Unavailable int `json:"unavailable"`
+	Failed      int `json:"failed"`
 }
 
 // AuditInfo records who ran a backup and from where. It is populated only when
@@ -142,6 +146,16 @@ func (m *Manifest) addHashed(path, status string, reason error) error {
 	return nil
 }
 
+// AddUnavailable records an optional endpoint that does not exist for this
+// organization (feature not enabled). No file is written for it.
+func (m *Manifest) AddUnavailable(name string, reason error) {
+	m.Files = append(m.Files, FileEntry{
+		Name:   name + ".json",
+		Status: "unavailable",
+		Error:  sanitizeError(reason),
+	})
+}
+
 // AddFailedFile records an endpoint that could not be fetched.
 func (m *Manifest) AddFailedFile(name string, err error) {
 	m.Files = append(m.Files, FileEntry{
@@ -161,6 +175,8 @@ func (m *Manifest) Write(path, token string) error {
 			m.Summary.Successful++
 		case "incomplete":
 			m.Summary.Incomplete++
+		case "unavailable":
+			m.Summary.Unavailable++
 		default:
 			m.Summary.Failed++
 		}
@@ -221,8 +237,8 @@ func VerifyManifest(manifestPath, token string) error {
 	}
 	dir := filepath.Dir(manifestPath)
 	for _, f := range parsed.Files {
-		if f.Status == "failed" {
-			continue // nothing was written for a failed endpoint
+		if f.Status == "failed" || f.Status == "unavailable" {
+			continue // nothing was written for these
 		}
 		sum, err := hashFile(filepath.Join(dir, filepath.FromSlash(f.Name)))
 		if err != nil {

@@ -174,7 +174,7 @@ backup verify --dir <path>
 
 Hauptbefehl:
   --output PATH     Backup-Zielverzeichnis (Standard: ./backup)
-  --org-id ID       Organisations-ID (optional, wird automatisch ermittelt)
+  --org-id ID       Organisations-ID (Standard: $HOLASPIRIT_ORG_ID; sonst automatisch via /api/me)
   --dry-run         Verbindung testen ohne Daten zu schreiben
   --timeout MIN     Gesamt-Timeout in Minuten (Standard: 120, 0 = kein Timeout)
   --audit           Hostname + Benutzer im Manifest erfassen (Audit-Trail)
@@ -195,16 +195,19 @@ der Rest des Backups bleibt verwendbar.
 
 ### Erster Lauf: Ergebnis prüfen
 
-Die Paginierung folgt der veröffentlichten API-Spec und konnte vor dem ersten Einsatz nicht gegen
-eine echte Organisation getestet werden. Nach dem ersten Lauf deshalb kurz prüfen:
+Nach dem ersten Lauf (und nach jedem Update) kurz prüfen:
 
 1. **Token:** von einem Holaspirit-Admin, sonst schlagen Admin-Endpunkte (Webhooks, SAML) fehl.
-2. **Log durchsehen**, die drei Meldungen bedeuten:
+   Darf der Token `/api/me` nicht lesen (HTTP 403, typisch für Organisations-Tokens), muss die
+   Organisations-ID angegeben werden: `--org-id <id>` oder Umgebungsvariable `HOLASPIRIT_ORG_ID`.
+   Die ID steht in der Holaspirit-URL (`app.holaspirit.com/o/<id>/…`).
+2. **Log durchsehen**, die Meldungen bedeuten:
 
    | Meldung | Bedeutung |
    |---------|-----------|
    | `endpoint ok` | vollständig gesichert; `records` = Anzahl Einträge |
-   | `endpoint incomplete` | Daten geschrieben, aber die API meldete mehr Einträge als geliefert (Zahlen in der Meldung) |
+   | `endpoint incomplete` | Daten geschrieben, aber nicht alles abrufbar: weniger Einträge als gemeldet, oder die API-Obergrenze von 10'000 Einträgen erreicht (Details in der Meldung) |
+   | `endpoint not available` | Funktion in dieser Organisation nicht aktiv (z. B. Übersetzungen) — nichts zu sichern, kein Fehler |
    | `endpoint failed` | nichts gesichert; Grund in der Meldung (z. B. HTTP 403 = Token ohne Berechtigung, „page parameter seems to be ignored“ = Paginierung passt nicht zur API) |
 
 3. **Plausibilität:** `records` von `members`, `roles`, `circles` mit den Zahlen in der

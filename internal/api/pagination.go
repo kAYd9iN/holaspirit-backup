@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -128,7 +129,11 @@ func FetchAllPages(ctx context.Context, client *Client, path string) (*Collectio
 		q := url.Values{}
 		q.Set("page", strconv.Itoa(page))
 		q.Set("count", strconv.Itoa(pageSize))
-		body, err := client.Get(ctx, path+"?"+q.Encode())
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&" // path already carries filters (e.g. time windows)
+		}
+		body, err := client.Get(ctx, path+sep+q.Encode())
 		if err != nil {
 			return nil, fmt.Errorf("page %d of %s: %w", page, path, err)
 		}

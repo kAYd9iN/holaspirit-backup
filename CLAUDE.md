@@ -134,6 +134,17 @@ without a key, strict mode incompatible with bot commits).
 - Design & Architektur (ID: 2326535)
 - Betrieb & Installation (ID: 2490371)
 
+## Live-run findings (2026-10-14, first real organization)
+
+- Pagination per spec works (533 roles, 4081 meetings, 5490 tasks).
+- **10,000 result cap**: tensions/node-tensions stopped at exactly 10,000 with totalItems capped
+  too → `api.ResultCap`; `ByCreated` endpoints use `FetchByCreatedWindows` (self-verifying date
+  format, halving windows, dedupe, createdAt-in-window check); any other endpoint at the cap → incomplete
+- `/api/me` → 403 for organization tokens → `--org-id` / `HOLASPIRIT_ORG_ID`, clear error
+- translations/node-translations 404, chartviews 400 → `Endpoint.Optional` → status `unavailable`;
+  HTTP 400 on paging → one plain retry
+- Tests: `api.Unthrottled` (export_test.go) removes the rate limiter for fake-server tests
+
 ## Extending: Adding a New Endpoint
 
 1. Add entry to `orgCollections` in `internal/api/endpoints.go` (`paginated: true` only if the

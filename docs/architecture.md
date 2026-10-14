@@ -131,6 +131,17 @@ Schutzmechanismen:
   mit Duplikaten zu speichern.
 - **Vollständigkeit:** meldet die API in `pagination.totalItems` mehr Einträge als geliefert
   wurden, werden die Daten geschrieben, aber im Manifest als `incomplete` markiert (Exit-Code 1).
+- **API-Obergrenze 10'000:** Holaspirit liefert pro Abfrage höchstens 10'000 Einträge und meldet
+  auch `totalItems` höchstens als 10'000 (im Live-Lauf bei `tensions`/`node-tensions` gesehen).
+  `tensions` und `node-tensions` werden deshalb in **Zeitfenstern** über `createdAfter`/`createdBefore`
+  geholt: Das Tool prüft zuerst, in welchem Datumsformat der (undokumentierte) Filter wirklich greift,
+  halbiert den Zeitraum, bis jedes Fenster unter 10'000 liegt, entfernt Doppelte über die ID und
+  prüft, dass jedes Ergebnis im angefragten Fenster liegt. Lässt sich das nicht nachweisen, oder
+  erreicht ein anderer Endpunkt genau 10'000, wird er als `incomplete` markiert — nie still als vollständig.
+- **Optionale Endpunkte:** `translations`, `node-translations`, `chartviews` und
+  `authentication-saml` hängen von Funktionen der Organisation ab. HTTP 400/403/404 markiert sie als
+  `unavailable` (kein Fehler, Exit-Code 0). Lehnt eine Liste die Paging-Parameter ab (HTTP 400),
+  wird sie einmal ohne Paging abgerufen.
 - **Obergrenzen:** max. 500 Seiten und 1 Mio. Einträge pro Endpunkt.
 
 ## verify-Subcommand
