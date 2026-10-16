@@ -19,7 +19,7 @@ func runCompare(args []string) int {
 	fs := flag.NewFlagSet("compare", flag.ExitOnError)
 	hsDir := fs.String("holaspirit", "", "Holaspirit backup directory (made by holaspirit-backup v0.5.0) (required)")
 	tsDir := fs.String("talkspirit", "", "Talkspirit backup directory (required)")
-	out := fs.String("out", "./vergleich", "Directory for vergleich.md and befunde.csv")
+	out := fs.String("out", "./vergleich", "Directory for vergleich.xlsx")
 	mig := fs.String("migrated-at", "", "End of the migration, YYYY-MM-DD or YYYY-MM-DDTHH:MM (UTC); estimated from the data if empty")
 	fs.Parse(args) // #nosec G104 -- FlagSet uses ExitOnError
 	if *hsDir == "" || *tsDir == "" {
@@ -45,7 +45,7 @@ func runCompare(args []string) int {
 		slog.Error("comparing backups", "error", sanitizeLog(err.Error()))
 		return 2
 	}
-	md, csv, err := r.WriteFiles(*out)
+	path, err := r.WriteFiles(*out)
 	if err != nil {
 		slog.Error("writing report", "error", err)
 		return 2
@@ -56,7 +56,7 @@ func runCompare(args []string) int {
 			suspicious++
 		}
 	}
-	slog.Info("comparison written", "report", md, "findings", csv, "suspicious", suspicious, "total", len(r.Findings),
+	slog.Info("comparison written", "workbook", path, "suspicious", suspicious, "total", len(r.Findings),
 		"migrated_at", r.MigratedAt.Format(time.RFC3339), "estimated", r.MigratedAtGuessed)
 	return 0
 }

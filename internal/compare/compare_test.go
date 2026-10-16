@@ -1,8 +1,11 @@
 package compare
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"encoding/xml"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,7 +87,8 @@ func fixture(t *testing.T) (hs, ts string) {
 
 func find(r *Report, area string, kind Kind, keyPart, detailPart string) bool {
 	for _, f := range r.Findings {
-		if f.Area == area && f.Kind == kind && strings.Contains(f.Key, keyPart) && strings.Contains(f.Detail, detailPart) {
+		text := f.What + "|" + f.Original + "|" + f.Current + "|" + f.Detail
+		if f.Area == area && f.Kind == kind && strings.Contains(f.Key+"|"+f.Circle, keyPart) && strings.Contains(text, detailPart) {
 			return true
 		}
 	}
@@ -104,10 +108,10 @@ func TestRun_Fixture(t *testing.T) {
 		detail string
 	}{
 		{areaUsers, Missing, "ben@x.ch", ""},
-		{areaRoles, Missing, "Org › Sales › Lost Role", ""},
+		{areaRoles, Missing, "Lost Role", "Rolle fehlt"},
 		{areaRoles, MissingPart, "Key Account", "Verträge verhandeln"},
 		{areaAssign, MissingPart, "Key Account", "ben@x.ch"},
-		{areaRoles, DiffEdited, "Edited Role", "Accountability fehlt"},
+		{areaRoles, DiffEdited, "Edited Role", "Alte Aufgabe"},
 		{areaRoles, DiffEdited, "Edited Role", "Purpose geändert"},
 		{areaRoles, NewInTS, "New Role", ""},
 		{areaTensions, Missing, "Lost item", ""},
@@ -131,15 +135,32 @@ func TestRun_Fixture(t *testing.T) {
 		t.Error("checklists should be listed as not verifiable")
 	}
 
-	var md, csv bytes.Buffer
-	if err := r.WriteMarkdown(&md); err != nil {
+	// The Holaspirit original is carried for copying back.
+	if !find(r, areaRoles, MissingPart, "Key Account", "Verträge verhandeln") {
+		t.Error("missing accountability must carry the original text")
+	}
+	for _, f := range r.Findings {
+		if f.Area == areaRoles && f.Key == "Lost Role" && f.Circle != "Org › Sales" {
+			t.Errorf("circle of the lost role = %q", f.Circle)
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := r.WriteXLSX(&buf); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.WriteCSV(&csv); err != nil {
-		t.Fatal(err)
+	parts := unzip(t, buf.Bytes())
+	for _, want := range []string{"Arbeitsliste", "Mängelliste Talkspirit", "Übersicht", "Nicht prüfbar"} {
+		if !strings.Contains(parts["xl/workbook.xml"], want) {
+			t.Errorf("workbook lacks sheet %q", want)
+		}
 	}
-	if !strings.Contains(md.String(), "Lost Role") || !strings.Contains(csv.String(), "FEHLT;ja;") {
-		t.Errorf("report output incomplete:\n%s", md.String())
+	work := parts["xl/worksheets/sheet2.xml"]
+	if !strings.Contains(work, "Lost Role") || !strings.Contains(work, "Verträge verhandeln") || !strings.Contains(work, "Kein Fehler") {
+		t.Error("work list lacks the expected rows or the status drop-down")
+	}
+	if strings.Contains(work, "New Role") {
+		t.Error("legitimate new roles must not be on the work list")
 	}
 }
 
@@ -175,8 +196,30 @@ func TestMatch_MultisetPairing(t *testing.T) {
 	}
 }
 
-func TestCSVSafe(t *testing.T) {
-	if csvSafe("=HYPERLINK()") != "'=HYPERLINK()" || csvSafe("ok") != "ok" {
-		t.Error("formula injection guard")
+// unzip returns the parts of an .xlsx and checks each is well-formed XML.
+func unzip(t *testing.T, b []byte) map[string]string {
+	t.Helper()
+	z, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		t.Fatal(err)
 	}
+	out := map[string]string{}
+	for _, f := range z.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(rc)
+		rc.Close()
+		dec := xml.NewDecoder(bytes.NewReader(data))
+		for {
+			if _, err := dec.Token(); err == io.EOF {
+				break
+			} else if err != nil {
+				t.Fatalf("%s is not well-formed XML: %v", f.Name, err)
+			}
+		}
+		out[f.Name] = string(data)
+	}
+	return out
 }

@@ -46,12 +46,16 @@ func (k Kind) Suspicious() bool {
 
 // Finding is one reported difference.
 type Finding struct {
-	Area   string
-	Kind   Kind
-	Key    string // human-readable identity (path, title, e-mail)
-	Detail string
-	HSID   string
-	TSID   string
+	Area     string
+	Kind     Kind
+	Circle   string // circle path (or project) the object belongs to, for grouping
+	Key      string // human-readable identity (name, title, e-mail)
+	What     string // what is wrong, short ("Accountability fehlt")
+	Original string // the Holaspirit content (target state, to copy back)
+	Current  string // the Talkspirit content (actual state)
+	Detail   string // context
+	HSID     string
+	TSID     string
 }
 
 // AreaStats summarizes one area.
@@ -105,26 +109,41 @@ func (r *Report) note(format string, a ...any) {
 	r.Notes = append(r.Notes, fmt.Sprintf(format, a...))
 }
 
-// sortFindings orders findings by area (in area order), kind, key.
+// KindRank returns the position of a kind from "act on this" to "for information".
+func KindRank(k Kind) int {
+	for i, x := range kindOrder {
+		if x == k {
+			return i
+		}
+	}
+	return len(kindOrder)
+}
+
+// sortFindings orders findings top-down: area priority, kind, circle, key.
 func (r *Report) sortFindings() {
-	areaIdx := map[string]int{}
-	for i, a := range r.Areas {
-		areaIdx[a.Area] = i
-	}
-	kindIdx := map[Kind]int{}
-	for i, k := range kindOrder {
-		kindIdx[k] = i
-	}
+	sort.SliceStable(r.Areas, func(i, j int) bool { return AreaRank(r.Areas[i].Area) < AreaRank(r.Areas[j].Area) })
 	sort.SliceStable(r.Findings, func(i, j int) bool {
 		a, b := r.Findings[i], r.Findings[j]
-		if areaIdx[a.Area] != areaIdx[b.Area] {
-			return areaIdx[a.Area] < areaIdx[b.Area]
+		if ra, rb := AreaRank(a.Area), AreaRank(b.Area); ra != rb {
+			return ra < rb
 		}
-		if kindIdx[a.Kind] != kindIdx[b.Kind] {
-			return kindIdx[a.Kind] < kindIdx[b.Kind]
+		if ka, kb := KindRank(a.Kind), KindRank(b.Kind); ka != kb {
+			return ka < kb
+		}
+		if a.Circle != b.Circle {
+			return a.Circle < b.Circle
 		}
 		return a.Key < b.Key
 	})
+}
+
+// moved classifies an object found under another parent: suspicious, unless
+// the Talkspirit object was changed after the cut-off.
+func (r *Report) moved(hsUpdated, tsUpdated time.Time) Kind {
+	if k := r.classify(hsUpdated, tsUpdated); k != DiffUntouched {
+		return k
+	}
+	return Moved
 }
 
 // classify decides how to read a difference between a matched pair.

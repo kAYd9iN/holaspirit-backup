@@ -165,7 +165,14 @@ backup compare --holaspirit <dir> --talkspirit <dir> [--migrated-at …] [--out 
 ```
 
 Liest ein Holaspirit-Backup von v0.5.0 und ein Talkspirit-Backup und schreibt
-`vergleich.md` und `befunde.csv` (`0600`, enthalten Namen/E-Mails). Keine Netzwerkzugriffe.
+`vergleich.xlsx` (`0600`, enthält Namen/E-Mails). Keine Netzwerkzugriffe. Die Arbeitsmappe
+schreibt `internal/xlsx` ohne Fremdbibliothek (Text immer als Inline-String, nie als Formel).
+
+**Aufbau der Arbeitsmappe** (von oben nach unten nach Wichtigkeit): Übersicht pro Bereich mit
+Priorität Hoch (Personen, Kreise, Rollen, Besetzungen, Richtlinien), Mittel (Felder, Ziele,
+Zeiträume, Projekte, Spalten, Labels, Aufgaben), Niedrig (Meetings, Traktanden/Notizen) →
+Arbeitsliste (Verdachtsfälle, Status-Auswahl, Verantwortlich, Kommentar) → Mängelliste Talkspirit
+(gleiche Nummern, Soll/Ist) → ein Blatt pro Bereich (alle Befunde) → Nicht prüfbar → Audit-Log.
 
 **Zuordnung.** Die Partner API kennt die Holaspirit-IDs nicht. Zugeordnet wird deshalb in
 mehreren Durchgängen, vom strengsten Merkmal zum lockersten; was in einem Durchgang ein
@@ -203,7 +210,7 @@ die meisten Talkspirit-Kreise/-Rollen/-Personen angelegt wurden):
 | `ABWEICHUNG_HS_NACH_MIGRATION` | Holaspirit-Objekt wurde nach der Migration noch geändert → Abweichung erwartbar |
 | `NEU_IN_TALKSPIRIT` | nach der Migration angelegt → legitime Arbeit |
 
-Die ersten fünf gelten als Verdachtsfälle (CSV-Spalte „Verdacht Migrationsfehler“). Ein
+Die ersten fünf gelten als Verdachtsfälle (Arbeitsliste/Mängelliste; Spalte „Verdacht“ in den Bereichsblättern). Verschobene Objekte, die nach dem Stichtag bearbeitet wurden, gelten als gewollt. Ein
 fehlendes Objekt kann auch nach der Migration absichtlich gelöscht worden sein; der Bericht
 listet dafür die Audit-Log-Ereignisse nach Migrationsende.
 

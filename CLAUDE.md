@@ -22,7 +22,7 @@ go build -o backup ./cmd/backup
 ./backup --dry-run
 ./backup --output ./out            # --quick skips per-item comments/agenda items
 
-# Compare with a Holaspirit backup (writes vergleich.md + befunde.csv — contain PII)
+# Compare with a Holaspirit backup (writes vergleich.xlsx — contains PII)
 ./backup compare --holaspirit <hs-dir> --talkspirit <ts-dir> --migrated-at 2026-10-15 --out ./vergleich
 
 # Verify manifest
@@ -37,7 +37,8 @@ go build -o backup ./cmd/backup
 | `internal/api/client.go` | HTTP client — GET-only, TLS≥1.2, no redirects, pacing 1/650ms, honours `X-RateLimit-*` + `Retry-After`, RFC 7807 `code` → `StatusError.Problem` |
 | `internal/api/pagination.go` | `FetchAll`: cursor pagination (`next_cursor`/`has_more`), cursor-loop + repeated-page detection, 10k traversal cap (`400 INVALID_CURSOR`) → `ErrTraversalCap` with partial items |
 | `internal/backup/runner.go` | Worker pool (3), writes `<name>.json` and `<child>.json` (`[{parent_id, data}]`); `--quick` skips `Detail` children |
-| `internal/compare/` | Holaspirit ↔ Talkspirit matching on business keys (no shared IDs), classification against the migration time, German report |
+| `internal/compare/` | Holaspirit ↔ Talkspirit matching on business keys (no shared IDs), classification against the cut-off date, prioritized German Excel report (overview, work list, defect list, sheet per area) |
+| `internal/xlsx/` | Dependency-free .xlsx writer (inline strings, fixed style palette, filters, validations) — no third-party lib, keeps vendor/CBOM untouched |
 | `internal/backup/manifest.go` | SHA256 per file + HMAC-SHA-256 .sig, error sanitization, hex-decoded verify |
 | `internal/storage/writer.go` | Timestamped dirs, 0600 files, path sanitising + symlink resolution |
 | `docs/api-snapshot.json` | Baseline of the Partner API contract (fields + query params per route, untracked routes) |

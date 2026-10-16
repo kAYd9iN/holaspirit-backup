@@ -89,8 +89,16 @@ backup.exe compare --holaspirit C:\Backups\holaspirit\2026-10-14T15-04-21 `
                    --migrated-at 2026-10-15 --out C:\Backups\vergleich
 ```
 
-Ergebnis: `vergleich.md` (Bericht) und `befunde.csv` (alle Befunde, Excel-tauglich). Beide
-enthalten Namen und E-Mail-Adressen — vertraulich behandeln. Wie der Abgleich arbeitet, steht
+Ergebnis: **`vergleich.xlsx`**, von oben nach unten nach Wichtigkeit geordnet:
+- **Übersicht:** Zahlen pro Bereich in der Reihenfolge Personen → Kreise → Rollen → Besetzungen →
+  Richtlinien → Felder → Ziele → Projekte/Aufgaben → Meetings → Traktanden/Notizen;
+  Verdachtsfälle rot, mit Erklärung der Einordnung
+- **Arbeitsliste** (Team): alle Verdachtsfälle mit Holaspirit-Original zum Zurückkopieren,
+  Talkspirit-Ist, Status-Auswahl, Verantwortlich, Kommentar
+- **Mängelliste Talkspirit:** dieselben Fälle (gleiche Nr.) ohne interne Spalten, Soll/Ist als Beleg
+- je ein Blatt pro Bereich mit allen Befunden (auch den legitimen), „Nicht prüfbar“, Audit-Log
+
+Die Datei enthält Namen und E-Mail-Adressen — vertraulich behandeln. Wie der Abgleich arbeitet, steht
 in [docs/architecture.md](docs/architecture.md#vergleich-holaspirit--talkspirit).
 
 **Integrität prüfen:**
@@ -116,8 +124,8 @@ Optionen:
   --version         Version anzeigen
 
 compare:
-  --migrated-at     Ende der Migration (UTC); leer = aus den Talkspirit-Daten geschätzt
-  --out             Zielordner für vergleich.md + befunde.csv (Standard: ./vergleich)
+  --migrated-at     Stichtag = Ende der Migration (UTC); leer = aus den Daten geschätzt
+  --out             Zielordner für vergleich.xlsx (Standard: ./vergleich)
 ```
 
 ## Security & Trust

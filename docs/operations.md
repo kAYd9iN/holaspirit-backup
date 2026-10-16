@@ -146,11 +146,12 @@ backup.exe compare `
   meisten Kreise/Rollen/Personen in Talkspirit angelegt wurden) und im Bericht als „geschätzt“
   ausgewiesen. Davon hängt ab, ob eine Abweichung als vermutlich gewollt oder als Verdacht auf
   einen Migrationsfehler eingeordnet wird.
-- Ergebnis: `vergleich.md` und `befunde.csv` (Semikolon, UTF-8, öffnet direkt in Excel). Beide
-  enthalten Namen und E-Mail-Adressen: nicht ins Repository, nicht in Tickets kopieren.
-- Vorgehen beim Auswerten: zuerst die Abschnitte „Verdacht auf Migrationsfehler“ (Rollen,
-  Accountabilities, Besetzungen, Richtlinien), dann Meetings/Spannungen/Aufgaben über die CSV
-  filtern (Spalte „Verdacht Migrationsfehler“ = ja).
+- Ergebnis: `vergleich.xlsx`. Enthält Namen und E-Mail-Adressen: nicht ins Repository, nicht in
+  Tickets kopieren.
+- Vorgehen beim Auswerten: Blatt „Übersicht“ zeigt, wo die Verdachtsfälle liegen. Das Team
+  arbeitet die „Arbeitsliste“ von oben nach unten ab (Priorität Hoch = Personen, Kreise, Rollen,
+  Besetzungen, Richtlinien) und setzt pro Zeile den Status. Vor dem Versand an Talkspirit in der
+  „Mängelliste“ die Nummern entfernen, die als „Kein Fehler“ markiert wurden.
 
 ## Windows Task Scheduler (Cronjob)
 
@@ -214,7 +215,7 @@ Subcommand verify:
 Subcommand compare:
   --holaspirit DIR  Holaspirit-Backup (v0.5.0)
   --talkspirit DIR  Talkspirit-Backup
-  --out DIR         Zielordner für vergleich.md + befunde.csv (Standard: ./vergleich)
+  --out DIR         Zielordner für vergleich.xlsx (Standard: ./vergleich)
   --migrated-at T   Ende der Migration, YYYY-MM-DD oder YYYY-MM-DDTHH:MM (UTC)
 ```
 
