@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -114,20 +115,77 @@ func TestClientRetriesOn429(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		w.WriteHeader(http.StatusTooManyRequests)
+		if calls.Load() <= 4 {
+			w.Header().Set("Retry-After", "7")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Write([]byte(`{"data":[]}`))
 	}))
 	defer srv.Close()
 
-	c := api.NewClient(srv.URL, "test-token")
-	c.MaxRetries = 2
-	c.RetryDelay = 0
+	var sleeps []time.Duration
+	c := api.RecordSleeps(api.NewClient(srv.URL, "test-token"), &sleeps)
+	c.MaxRetries = 0 // throttling has its own, larger budget
 
-	_, err := c.Get(context.Background(), "/api/test")
-	if err == nil {
-		t.Fatal("expected error")
+	if _, err := c.Get(context.Background(), "/api/test"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := calls.Load(); got != 3 {
-		t.Fatalf("expected 3 calls (1 initial + 2 retries on 429), got %d", got)
+	if got := calls.Load(); got != 5 {
+		t.Fatalf("expected 5 calls, got %d", got)
+	}
+	for _, d := range sleeps {
+		if d != 7*time.Second {
+			t.Errorf("slept %v, want the Retry-After of 7s", d)
+		}
+	}
+}
+
+func TestClientGivesUpOnEndless429(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	var sleeps []time.Duration
+	c := api.RecordSleeps(api.NewClient(srv.URL, "test-token"), &sleeps)
+	if _, err := c.Get(context.Background(), "/api/test"); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
+// Before the window runs dry, the client waits for X-RateLimit-Reset.
+func TestClientPacesOnLowRemaining(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "1")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(30*time.Second).Unix(), 10))
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	var sleeps []time.Duration
+	c := api.RecordSleeps(api.NewClient(srv.URL, "k"), &sleeps)
+	if _, err := c.Get(context.Background(), "/x"); err != nil {
+		t.Fatal(err)
+	}
+	if len(sleeps) != 1 || sleeps[0] < 25*time.Second || sleeps[0] > 31*time.Second {
+		t.Errorf("sleeps = %v, want one ~30s pause", sleeps)
+	}
+}
+
+// Redirects are never followed: they could carry the Bearer token elsewhere.
+func TestClientDoesNotFollowRedirects(t *testing.T) {
+	var other atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { other.Store(true) }))
+	defer target.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer srv.Close()
+	c := api.Unthrottled(api.NewClient(srv.URL, "k"))
+	if _, err := c.Get(context.Background(), "/x"); err == nil {
+		t.Error("expected an error for a redirect")
+	}
+	if other.Load() {
+		t.Error("redirect was followed")
 	}
 }
 

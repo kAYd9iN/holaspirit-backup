@@ -46,14 +46,14 @@ type FileEntry struct {
 	// "ok"; "incomplete" (written, but not everything was retrievable);
 	// "unavailable" (optional feature not enabled — nothing to back up);
 	// or "failed".
-	Status  string `json:"status"`
-	Error   string `json:"error,omitempty"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
 }
 
 // Summary aggregates the backup run outcome.
 type Summary struct {
-	TotalFiles int `json:"total_files"`
-	Successful int `json:"successful"`
+	TotalFiles  int `json:"total_files"`
+	Successful  int `json:"successful"`
 	Incomplete  int `json:"incomplete"`
 	Unavailable int `json:"unavailable"`
 	Failed      int `json:"failed"`

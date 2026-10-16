@@ -8,23 +8,26 @@ holaspirit-backup/
 │   └── backup/
 │       ├── main.go              # Einstiegspunkt, CLI-Flags
 │       ├── verify.go            # verify-Subcommand (Manifest-Signatur prüfen)
-│       ├── token_windows.go     # Token via Windows Credential Manager
-│       └── token_other.go       # Token-Fallback für Nicht-Windows
+│       ├── compare.go           # compare-Subcommand (Holaspirit ↔ Talkspirit)
+│       ├── token.go             # Schlüssel aus TALKSPIRIT_API_KEY
+│       ├── token_windows.go     # Fallback: Windows Credential Manager
+│       └── token_other.go       # Fallback für Nicht-Windows (keiner)
 ├── internal/
 │   ├── api/
-│   │   ├── client.go            # HTTP-Client (GET-only), Rate-Limiter, Retry
-│   │   ├── endpoints.go         # alle 47 Organisations-Endpunkte + ValidateOrgID
-│   │   └── pagination.go        # FetchAllPages: Paginierung, linked, Vollständigkeit
+│   │   ├── client.go            # HTTP-Client (GET-only), Rate-Limit-Header, Retry-After
+│   │   ├── endpoints.go         # alle Partner-API-Routen + Unter-Ressourcen + whoami
+│   │   └── pagination.go        # FetchAll: Cursor-Paginierung, Schleifen-/Cap-Erkennung
 │   ├── backup/
-│   │   ├── runner.go            # Worker Pool (5 bounded Goroutinen)
+│   │   ├── runner.go            # Worker Pool (3 bounded Goroutinen) + Unter-Ressourcen
 │   │   └── manifest.go          # SHA256-Hashes + HMAC-SHA-256-Signatur
+│   ├── compare/                 # Abgleich Holaspirit-Backup ↔ Talkspirit-Backup, Bericht
 │   ├── credentials/
 │   │   ├── credentials.go       # Interface + Mock
 │   │   └── wincred.go           # Windows Credential Manager (build tag windows)
 │   └── storage/
 │       └── writer.go            # Dateien schreiben, Pfad-Sanitizing + Symlink-Auflösung, 0600/0750
 ├── scripts/
-│   ├── check-api-schema.sh      # credential-freier API-Drift-Check (publizierte Spec)
+│   ├── check-api-schema.sh      # credential-freier API-Drift-Check (/v1/openapi.json)
 │   └── check-cbom.sh            # CBOM-Konsistenz (Krypto-Import muss im CBOM stehen)
 ├── policy/
 │   └── nist-crypto.rego         # OPA/conftest NIST-Krypto-Policy (gatet Release)
@@ -58,91 +61,155 @@ holaspirit-backup/
 
 ## Architekturentscheidung: Bounded Worker Pool mit Rate-Limiter
 
-Alle Endpunkte werden über einen **bounded Pool von 5 Worker-Goroutinen** abgefragt.  
-Ein zentraler Token-Bucket-Limiter stellt sicher, dass das Rate-Limit  
-(250 Requests / 5 Minuten) nicht überschritten wird.
+Die Endpunkte werden über einen **bounded Pool von 3 Worker-Goroutinen** abgefragt.
+Das Kontingent der Partner API gilt **pro Schlüssel** (Standard ca. 100 Anfragen pro
+gleitender Minute, nicht vertraglich zugesichert) und wird von allen Workern geteilt — mehr
+Worker machen das Backup nicht schneller, drei verdecken nur die Latenz.
+
+- Ein zentraler Token-Bucket-Limiter taktet auf eine Anfrage pro 650 ms (Burst 3).
+- Sinkt `X-RateLimit-Remaining` unter 3, wartet der Client bis `X-RateLimit-Reset`.
+- HTTP 429 wird bis zu 10-mal wiederholt und respektiert `Retry-After` (eine abgewiesene
+  Anfrage zählt nicht gegen das Kontingent und wurde nicht ausgeführt). 5xx/Netzwerkfehler:
+  3 Wiederholungen mit exponentiellem Backoff. Wartezeiten sind auf 2 Minuten begrenzt.
+- Redirects werden nie verfolgt (der Bearer-Token darf keinen anderen Host erreichen).
 
 ```
-main.go
-  └─ runner.go (Worker Pool: 5 Goroutinen)
-       ├─ worker: circles
-       ├─ worker: roles
-       ├─ worker: members
-       ├─ worker: ... (alle 47 Endpunkte, je nach Verfügbarkeit)
+main.go  ── GET /v1/whoami (Schlüssel, Tenant, Scopes prüfen)
+  └─ runner.go (Worker Pool: 3 Goroutinen)
+       ├─ worker: circles ──► circle-members (pro Kreis)
+       ├─ worker: meetings ──► meeting-agenda-items (pro Meeting)
+       ├─ worker: tasks ──► subtasks (rekursiv) + task-comments (pro Aufgabe)
+       ├─ worker: ... (alle Endpunkte aus internal/api/endpoints.go)
        │       ↕ koordiniert über Rate-Limiter + bounded channel
        └─ manifest.go (nach Abschluss aller Worker)
 ```
 
-Der Pool begrenzt die Parallelität auf 5 gleichzeitige Requests, verhindert  
-Resource-Exhaustion und respektiert das API-Rate-Limit zuverlässig.
-
 ## Backup-Ablauf
 
-1. Token aus Windows Credential Manager laden (oder `HOLASPIRIT_TOKEN` Env-Variable)
-2. Organisations-ID via `ValidateOrgID` validieren
+1. API-Schlüssel aus `TALKSPIRIT_API_KEY` laden, sonst aus dem Windows Credential Manager
+   (`talkspirit-backup`)
+2. `GET /v1/whoami`: Schlüssel gültig? Tenant-ID (validiert, ins Manifest) und fehlende
+   Lese-Scopes melden
 3. Output-Verzeichnis anlegen: `backup/YYYY-MM-DDTHH-MM-SS/` (Berechtigungen: `0750`)
-4. Organisation-ID ermitteln via `GET /api/me` (wenn nicht per `--org-id` angegeben)
-5. Worker Pool starten (5 Goroutinen, alle 47 Endpunkte)
-6. Paginierung: alle Seiten pro Endpunkt zu `<name>.json` zusammenführen, die mitgelieferten
-   verknüpften Objekte zu `<name>-linked.json` (Berechtigungen: `0600`)
-7. Manifest schreiben: SHA256 pro Datei + HMAC-SHA-256-Signatur + Timestamp + Status
-8. Exit 0 (alles vollständig) oder Exit 1 (mindestens ein Endpunkt `failed` oder `incomplete`)
+4. Worker Pool starten; jede Liste per Cursor vollständig lesen → `<name>.json`
+5. Unter-Ressourcen pro Eintrag lesen → `<unterressource>.json` als
+   `[{"parent_id": "…", "data": [...]}]` (Berechtigungen: `0600`)
+6. Manifest schreiben: SHA256 pro Datei + HMAC-SHA-256-Signatur + Timestamp + Status
+7. Exit 0 (alles vollständig) oder Exit 1 (mindestens ein Endpunkt `failed` oder `incomplete`)
 
 ## Was gesichert wird
 
-Alle Organisations-Sammlungen der veröffentlichten Holaspirit-API, die Organisationsdaten
-enthalten (Liste in `internal/api/endpoints.go`):
+Alle Lese-Routen des veröffentlichten Partner-API-Vertrags (`/v1/openapi.json`), die
+Organisationsdaten enthalten (Liste in `internal/api/endpoints.go`):
 
-- **Struktur:** Organisation, Kreise, Rollen, Mitglieder, Richtlinien, Hierarchie, Rollen-Beziehungen, Diagramme
-- **Arbeit:** Tensions, Meetings (inkl. Wiederholungen und Vorlagen), OKRs, Tasks, Boards, Spalten,
-  Checklisten, Metriken, Kalender, Zeitaufwand
-- **Inhalte:** Publikationen inkl. Revisionen und Kommentar-Threads, Kategorien, Anhänge (Metadaten),
-  Highlights, Labels, Custom Fields, Zeiträume, Vorlagen, Übersetzungen, Chart-Ansichten
-- **Sichten:** die `node-*`-Baumansichten
-- **Konfiguration (Admin-Token nötig):** Webhooks, SAML-Konfiguration
-- **`*-linked.json`:** Holaspirit liefert verknüpfte Datensätze in einem `linked`-Block statt im
-  Datensatz selbst. Bei Rollen stehen z. B. die Texte der Verantwortlichkeiten, Domains und
-  Richtlinien nur dort; `roles.json` enthält davon nur die IDs.
+| Datei | Route | Unter-Ressourcen |
+|-------|-------|------------------|
+| `whoami.json` | `/v1/whoami` | |
+| `custom-fields-{circle,role,user}.json` | `/v1/custom-fields?entity_type=…` | |
+| `circles.json` | `/v1/circles?include=custom_fields` | `circle-members` |
+| `roles.json` | `/v1/roles?include=custom_fields,members` | |
+| `role-templates.json` | `/v1/role-templates` | |
+| `users.json` | `/v1/users?include=custom_fields` | |
+| `memberships.json` | `/v1/memberships` | |
+| `tensions.json` | `/v1/tensions?include=links` | |
+| `meetings.json` | `/v1/meetings?status=` alle (sonst fehlen abgesagte) | `meeting-agenda-items`¹ |
+| `tasks.json` | `/v1/tasks?archived_status=all&include=…` | `subtasks` (rekursiv), `task-comments`¹ |
+| `projects.json` | `/v1/projects?archived_status=all` | `sections`, `labels`, `project-comments`¹ |
+| `goals.json` | `/v1/goals?archived_status=all` | `goal-key-results`, `goal-comments`¹ |
+| `time-periods.json` | `/v1/time-periods` | |
+| `documents.json` | `/v1/documents?archived_status=all` | `document-content`, `document-comments`¹ |
+| `audit-logs.json` | `/v1/audit-logs` (Admin, optional) | |
+
+¹ eine Anfrage pro Eintrag; `--quick` lässt sie weg.
 
 **Bewusst nicht gesichert:**
 
-| Endpunkt | Grund |
-|----------|-------|
-| `tokens` | API-Geheimnisse |
-| `stripe/current` | Abrechnung, keine Organisationsdaten |
-| `favorites` | persönliche Daten des Token-Inhabers |
-| `search-global`, `search/mention`, `migration/domain-availability` | Abfragen, keine gespeicherten Daten |
-| `jobs`, `record` | flüchtiger Job-/Aufzeichnungs-Status |
-| `domains` | braucht einen Rollen-Parameter; die Inhalte stehen in `roles-linked.json` |
-| PDF-, öffentliche und Statistik-Endpunkte | abgeleitete Darstellungen bzw. Duplikate der gesicherten Daten |
-| Verläufe pro Objekt (`/{id}/feed`), Dateiinhalte der Anhänge | nicht im Umfang (Datensicherung für die Migration) |
+| Route | Grund |
+|-------|-------|
+| `/v1/structure-exports` | Start braucht POST — der Client ist absichtlich GET-only; Inhalt = Kreise/Rollen/Mitgliedschaften |
+| `/v1/*/{id}` (Detail) | gleiche Felder wie die Listen |
+| `/v1/roles/{id}/members`, `/v1/users/{id}/memberships` | bereits in `roles.json` (`include=members`) bzw. `memberships.json` |
+| `/healthz` | Diagnose |
+
+**Grenzen der API:** Der Schlüssel sieht nur, was sein technischer Benutzer sehen darf
+(Ausnahme: Spannungen sind mandantenweit). Gesperrte/anonymisierte Personen liefert
+`/v1/users` nicht. Checklisten, Metriken, Publikationen, Kalender und Webhooks haben in der
+Partner API kein Gegenstück.
 
 ## Paginierung
 
-Angefordert wird mit `page` und `count` (Seitengrösse 100), wie in der veröffentlichten Spec
-dokumentiert. Das Ende einer Liste ergibt sich, in dieser Reihenfolge, aus `pagination.pagesCount`,
-aus `pagination.nextPage` oder, wenn die Antwort keinerlei Paginierungs-Metadaten hat, aus der
-ersten leeren Seite. Das ältere Format `meta.pagination.total_pages` wird weiterhin verstanden.
+`{"data": [...], "pagination": {"next_cursor": "…", "has_more": true}}` — das Tool folgt
+`next_cursor`, bis `has_more` falsch ist. Seitengrösse: 199 (Maximum der meisten Routen),
+`users` 100, `meetings` 50.
 
 Schutzmechanismen:
 
-- **Wiederholte Seite:** liefert die API trotz gemeldeter weiterer Seiten nur bereits bekannte
-  Einträge (der `page`-Parameter wird ignoriert), schlägt der Endpunkt fehl, statt eine Liste
-  mit Duplikaten zu speichern.
-- **Vollständigkeit:** meldet die API in `pagination.totalItems` mehr Einträge als geliefert
-  wurden, werden die Daten geschrieben, aber im Manifest als `incomplete` markiert (Exit-Code 1).
-- **API-Obergrenze 10'000:** Holaspirit liefert pro Abfrage höchstens 10'000 Einträge und meldet
-  auch `totalItems` höchstens als 10'000 (im Live-Lauf bei `tensions`/`node-tensions` gesehen).
-  `tensions` und `node-tensions` werden deshalb in **Zeitfenstern** über `createdAfter`/`createdBefore`
-  geholt: Das Tool prüft zuerst, in welchem Datumsformat der (undokumentierte) Filter wirklich greift,
-  halbiert den Zeitraum, bis jedes Fenster unter 10'000 liegt, entfernt Doppelte über die ID und
-  prüft, dass jedes Ergebnis im angefragten Fenster liegt. Lässt sich das nicht nachweisen, oder
-  erreicht ein anderer Endpunkt genau 10'000, wird er als `incomplete` markiert — nie still als vollständig.
-- **Optionale Endpunkte:** `translations`, `node-translations`, `chartviews` und
-  `authentication-saml` hängen von Funktionen der Organisation ab. HTTP 400/403/404 markiert sie als
-  `unavailable` (kein Fehler, Exit-Code 0). Lehnt eine Liste die Paging-Parameter ab (HTTP 400),
-  wird sie einmal ohne Paging abgerufen.
-- **Obergrenzen:** max. 500 Seiten und 1 Mio. Einträge pro Endpunkt.
+- **Cursor-Schleife:** ein bereits gesehener Cursor, oder eine Seite, die nur bekannte Einträge
+  wiederholt, bricht den Endpunkt mit Fehler ab, statt Duplikate zu speichern.
+- **`has_more` ohne Cursor:** Fehler.
+- **10'000er-Grenze:** sortierte Listen brechen bei 10'000 Zeilen mit `400 INVALID_CURSOR` ab.
+  Das Gelesene wird geschrieben, der Endpunkt aber als `incomplete` markiert (Exit-Code 1).
+- **Unter-Ressourcen:** schlägt eine Anfrage für einen einzelnen Eintrag fehl, wird der Rest
+  trotzdem gesichert und der Endpunkt als `incomplete` markiert.
+- **Optionale Endpunkte:** `audit-logs` (Admin-Recht + Scope) wird bei 401/403/404 als
+  `unavailable` geführt. Fehlt einem anderen Endpunkt der Scope (`403 FORBIDDEN_SCOPE`),
+  schlägt er fehl und die Meldung nennt den fehlenden Scope.
+- **Fehlercodes:** aus RFC-7807-Fehlern wird nur der `code` (Format `[A-Z][A-Z0-9_]*`)
+  übernommen, nie der restliche Antworttext.
+- **Obergrenzen:** max. 5'000 Seiten und 1 Mio. Einträge pro Liste, Unteraufgaben max. 10 Ebenen.
+
+## Vergleich Holaspirit ↔ Talkspirit
+
+```
+backup compare --holaspirit <dir> --talkspirit <dir> [--migrated-at …] [--out <dir>]
+```
+
+Liest ein Holaspirit-Backup von v0.5.0 und ein Talkspirit-Backup und schreibt
+`vergleich.md` und `befunde.csv` (`0600`, enthalten Namen/E-Mails). Keine Netzwerkzugriffe.
+
+**Zuordnung.** Die Partner API kennt die Holaspirit-IDs nicht. Zugeordnet wird deshalb in
+mehreren Durchgängen, vom strengsten Merkmal zum lockersten; was in einem Durchgang ein
+Gegenstück findet, ist für die weiteren vergeben. Gleiche Merkmale werden als Multimenge
+gepaart, damit Anzahlen auch bei Mehrdeutigkeit stimmen.
+
+| Bereich | Merkmale (in Reihenfolge) |
+|---------|---------------------------|
+| Personen | E-Mail |
+| Kreise | Namenspfad, dann Name (→ `VERSCHOBEN`) |
+| Rollen | Kreispfad + Name, dann Name (→ `VERSCHOBEN`); Kreis-Rollen zählen zu den Kreisen |
+| Inhalte von Kreisen/Rollen | Purpose, Accountabilities, Domänen als Textmengen; HTML/Markdown/Leerraum zählen nicht, ≥ 90 % Wortübereinstimmung gilt als gleich; bei eingeladenen Rollen die Texte der Ursprungsrolle |
+| Rollenbesetzungen | E-Mail der Personen je Rolle; abgelaufene Holaspirit-Zuweisungen zählen nicht |
+| Richtlinien | Titel ↔ Talkspirit-Dokumente |
+| Ziele / Key Results | Titel |
+| Meetings | Titel + Minute, Kreis + Minute, Titel + Tag, Kreis + Tag, Minute, Titel; Meetings ohne Datum („Evolution outside meeting“) über den Erstellzeitpunkt |
+| Spannungen / Traktanden | Titel im zugeordneten Meeting, dann Titel + Minute/Tag gegen Spannungen und Traktanden, dann Titel |
+| Aufgaben | Titel + Minute, Titel + Tag, Titel im zugeordneten Projekt, Titel |
+| Projekte, Spalten, Labels | Name (Spalten/Labels innerhalb des zugeordneten Projekts) |
+
+Zuordnungen nur über den Titel oder nur über die Uhrzeit werden als `UNSICHER_ZUGEORDNET`
+ausgewiesen.
+
+**Einordnung gegen den Migrationszeitpunkt** (`--migrated-at`, sonst geschätzt: der Tag, an dem
+die meisten Talkspirit-Kreise/-Rollen/-Personen angelegt wurden):
+
+| Befund | Bedeutung |
+|--------|-----------|
+| `FEHLT` | in Holaspirit, in Talkspirit nicht gefunden |
+| `FEHLT_TEIL` | Objekt da, aber Accountability/Domäne/Purpose/Besetzung/Key Result fehlt, und das Objekt wurde seit der Migration nicht geändert |
+| `ABWEICHUNG_UNVERAENDERT` | abweichend, Talkspirit-Objekt seit der Migration unverändert → Verdacht Migrationsfehler |
+| `VERSCHOBEN` | nur unter einem anderen Kreis gefunden |
+| `NUR_IN_TALKSPIRIT` | in Talkspirit vor Migrationsende angelegt, im Holaspirit-Backup nicht vorhanden |
+| `ABWEICHUNG_BEARBEITET` | abweichend, Talkspirit-Objekt nach der Migration geändert → vermutlich gewollt |
+| `ABWEICHUNG_HS_NACH_MIGRATION` | Holaspirit-Objekt wurde nach der Migration noch geändert → Abweichung erwartbar |
+| `NEU_IN_TALKSPIRIT` | nach der Migration angelegt → legitime Arbeit |
+
+Die ersten fünf gelten als Verdachtsfälle (CSV-Spalte „Verdacht Migrationsfehler“). Ein
+fehlendes Objekt kann auch nach der Migration absichtlich gelöscht worden sein; der Bericht
+listet dafür die Audit-Log-Ereignisse nach Migrationsende.
+
+**Nicht prüfbar** (kein Gegenstück in der Partner API) und nur mit Anzahl gelistet:
+Checklisten, Metriken, Publikationen samt Revisionen, Anhänge/Links ausserhalb von Aufgaben,
+Kalender, Highlights, Meeting-Vorlagen und -Serien, Webhooks, Inhalt von Governance-Vorschlägen.
 
 ## verify-Subcommand
 
@@ -173,11 +240,11 @@ Siehe [docs/supply-chain.md](supply-chain.md) für die vollständige Verifikatio
 
 ## Fehlerbehandlung
 
-- Pro Endpunkt: max. 3 Retries mit Exponential Backoff (2s, 4s, 8s)
-- HTTP 429 und 5xx: Retry mit Backoff; HTTP 4xx (außer 429): kein Retry
+- 5xx/Netzwerkfehler: max. 3 Retries mit Exponential Backoff (2s, 4s, 8s)
+- HTTP 429: bis zu 10 Retries nach `Retry-After`; HTTP 4xx (außer 429): kein Retry
 - Fehlgeschlagener Endpunkt bricht den Lauf **nicht** ab
 - Fehlschläge werden im Manifest als `"status": "failed"` markiert, unvollständige Listen als
-  `"status": "incomplete"` (Datei geschrieben und signiert, aber weniger Einträge als gemeldet)
+  `"status": "incomplete"` (Datei geschrieben und signiert, aber nicht alles abrufbar)
 - Logging via `slog` (strukturiertes Logging, kein separates Log-File)
 - Response-Body begrenzt auf 100 MiB (Schutz vor Memory-Exhaustion)
 
@@ -186,13 +253,14 @@ Siehe [docs/supply-chain.md](supply-chain.md) für die vollständige Verifikatio
 ```
 backup/
   2026-03-06T02-00-00/
-    organization.json
+    whoami.json
     circles.json
-    circles-linked.json        # mitgelieferte verknüpfte Objekte, sofern vorhanden
-    roles.json
-    roles-linked.json          # u. a. Verantwortlichkeiten, Domains, Richtlinien
-    members.json
-    ...                        # eine Datei pro Endpunkt (47), je nach Antwort plus -linked
+    circle-members.json        # [{"parent_id": "<Kreis>", "data": [...]}]
+    roles.json                 # inkl. Purpose, Domänen, Accountabilities, Besetzung
+    users.json
+    meetings.json
+    meeting-agenda-items.json
+    ...                        # eine Datei pro Endpunkt und Unter-Ressource
     backup-manifest.json
     backup-manifest.sig
 ```
@@ -203,7 +271,7 @@ backup/
 {
   "timestamp": "2026-03-06T02:00:00Z",
   "tool_version": "1.0.0",
-  "organization_id": "org_xxx",
+  "organization_id": "<tenant_id aus /v1/whoami>",
   "files": [
     {
       "name": "circles.json",
@@ -214,7 +282,7 @@ backup/
       "name": "roles.json",
       "sha256": "def456...",
       "status": "incomplete",
-      "error": "retrieved 100 of 140 items the API reported (40 missing)"
+      "error": "/v1/tensions after 10000 items: the API refused to page further (traversal cap)"
     }
   ],
   "summary": {

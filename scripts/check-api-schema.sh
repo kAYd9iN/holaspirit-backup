@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # check-api-schema.sh
 #
-# Compares Holaspirit's *published* OpenAPI spec against the stored baseline
-# (docs/api-snapshot.json). The spec is embedded in the public API doc page
-# (https://app.holaspirit.com/api/doc/), so no token, organization, or other
-# credentials are required — the check runs entirely against public docs.
+# Compares the *published* OpenAPI contract of the Talkspirit Partner API
+# (https://partner-api.talkspirit.com/v1/openapi.json — public, exempt from rate
+# limiting) against the stored baseline (docs/api-snapshot.json). No API key or
+# other credentials are required.
 #
-# Tracked: every endpoint the tool actually calls (see internal/api/endpoints.go).
+# Tracked: every route the tool actually calls (see internal/api/endpoints.go) —
+# its response fields and its query parameters.
 # Sentinel values in the snapshot:
-#   __ENDPOINT_MISSING__   — endpoint no longer documented (removed/deprecated)
+#   __ENDPOINT_MISSING__   — route no longer documented (removed/deprecated)
 #   __SCHEMA_UNPARSEABLE__ — response schema shape changed beyond recognition
 #
 # Usage (local): ./scripts/check-api-schema.sh
@@ -16,13 +17,13 @@
 # Exit codes:
 #   0 — no drift (or baseline just created)
 #   1 — drift detected (CI opens a PR)
-#   2 — spec download/extraction failed — no snapshot written
+#   2 — spec download failed — no snapshot written
 
 set -euo pipefail
 
 SNAPSHOT="docs/api-snapshot.json"
-UA="holaspirit-backup-api-check (+https://github.com/kAYd9iN/holaspirit-backup)"
-DOC_URL="https://app.holaspirit.com/api/doc/"
+UA="talkspirit-backup-api-check (+https://github.com/kAYd9iN/holaspirit-backup)"
+SPEC_URL="https://partner-api.talkspirit.com/v1/openapi.json"
 
 # Pick a python that actually runs (on Windows, `python3` may resolve to the
 # Microsoft Store alias stub, which only prints an install hint).
@@ -35,46 +36,17 @@ done
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
-echo "Fetching published Holaspirit API documentation..." >&2
-curl -sfL -A "$UA" --max-time 60 "$DOC_URL" -o "$WORKDIR/doc.html" \
-  || { echo "ERROR: failed to download API doc page ($DOC_URL)" >&2; exit 2; }
+echo "Fetching the published Talkspirit Partner API contract..." >&2
+curl -sfL -A "$UA" --max-time 60 "$SPEC_URL" -o "$WORKDIR/openapi.json"   || { echo "ERROR: failed to download $SPEC_URL" >&2; exit 2; }
 
-"$PYTHON" - "$WORKDIR/doc.html" > "$WORKDIR/snapshot.json" <<'PY'
+"$PYTHON" - "$WORKDIR/openapi.json" > "$WORKDIR/snapshot.json" <<'PY'
 import json, sys, datetime
 
-html = open(sys.argv[1], encoding="utf-8").read()
-
-# The OpenAPI spec is embedded in the Swagger UI bootstrap: `spec: {...}`.
-# Extract it with a string-aware balanced-brace scan.
-marker = html.find("spec: {")
-if marker < 0:
-    sys.stderr.write("ERROR: embedded OpenAPI spec not found in doc page\n")
+try:
+    spec = json.load(open(sys.argv[1], encoding="utf-8"))
+except ValueError:
+    sys.stderr.write("ERROR: the OpenAPI contract is not valid JSON\n")
     sys.exit(2)
-start = html.find("{", marker)
-depth, in_str, esc, end = 0, False, False, -1
-for j in range(start, len(html)):
-    c = html[j]
-    if in_str:
-        if esc:
-            esc = False
-        elif c == "\\":
-            esc = True
-        elif c == '"':
-            in_str = False
-    else:
-        if c == '"':
-            in_str = True
-        elif c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                end = j
-                break
-if end < 0:
-    sys.stderr.write("ERROR: could not find end of embedded spec\n")
-    sys.exit(2)
-spec = json.loads(html[start:end + 1])
 
 def deref(obj, depth=0):
     while isinstance(obj, dict) and "$ref" in obj and depth < 30:
@@ -86,95 +58,93 @@ def deref(obj, depth=0):
     return obj
 
 def props_of(schema, depth=0):
-    """Resolve a schema to its property map, merging allOf members."""
+    """Resolve a schema to its property map, merging allOf/anyOf members."""
     if depth > 10:
         return {}
     schema = deref(schema)
     props = dict(schema.get("properties", {}))
-    for member in schema.get("allOf", []):
-        props.update(props_of(member, depth + 1))
+    for key in ("allOf", "anyOf", "oneOf"):
+        for member in schema.get(key, []):
+            props.update(props_of(member, depth + 1))
     return props
 
-def fields(path):
-    item = spec.get("paths", {}).get(path)
+def describe(route):
+    item = spec.get("paths", {}).get(route)
     if not item or "get" not in item:
-        return ["__ENDPOINT_MISSING__"]
+        return {"fields": ["__ENDPOINT_MISSING__"], "params": []}
+    get = item["get"]
+    params = sorted(p.get("name", "?") for p in get.get("parameters", []) if p.get("in") == "query")
     try:
-        schema = item["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+        schema = get["responses"]["200"]["content"]["application/json"]["schema"]
         props = props_of(schema)
-        # Holaspirit responses wrap payloads: {data: [...]|{...}, linked, meta, pagination}
+        # Partner API list responses: {data: [...], pagination: {...}}
         if "data" in props:
             data = deref(props["data"])
-            if data.get("type") == "array":
-                props = props_of(data.get("items", {}))
-            else:
-                props = props_of(data)
-        return sorted(props.keys()) or ["__SCHEMA_UNPARSEABLE__"]
+            props = props_of(data.get("items", {})) if data.get("type") == "array" else props_of(data)
+        return {"fields": sorted(props.keys()) or ["__SCHEMA_UNPARSEABLE__"], "params": params}
     except (KeyError, TypeError):
-        return ["__SCHEMA_UNPARSEABLE__"]
+        return {"fields": ["__SCHEMA_UNPARSEABLE__"], "params": params}
 
-# Every endpoint internal/api/endpoints.go backs up: backup file name -> spec path
-# below BASE. Must match orgCollections in endpoints.go (enforced by the Go test
+# Every route internal/api/endpoints.go calls: backup file name -> OpenAPI
+# route. Must match endpoints.go (enforced by the Go test
 # TestDriftCheckCoversAllEndpoints).
-BASE = "/api/organizations/{organization_id}"
 ENDPOINTS = {
-    "organization": "",
-    "circles": "/circles",
-    "circles-timespent": "/circles-timespent",
-    "roles": "/roles",
-    "members": "/members",
-    "tensions": "/tensions",
-    "policies": "/policies",
-    "meetings": "/meetings",
-    "okrs": "/okrs",
-    "node-okrs": "/node-okrs",
-    "tasks": "/tasks",
-    "boards": "/boards",
-    "columns": "/columns",
-    "checklists": "/checklists",
-    "metrics": "/metrics",
-    "publications": "/publications",
-    "categories": "/categories",
-    "attachments": "/attachments",
-    "chartviews": "/chartviews",
-    "calendars": "/calendars",
-    "backups": "/backups",
-    "custom-fields": "/custom-fields",
-    "roles-custom-fields": "/roles-custom-fields",
-    "roles-relations": "/roles/relations",
-    "roles-diagram": "/roles-diagram",
-    "members-hierarchy": "/members-hierarchy",
-    "labels": "/labels",
-    "highlights": "/highlights",
-    "timeframes": "/timeframes",
-    "templates": "/templates",
-    "meetingtemplates": "/meetingtemplates",
-    "meetings-recurrences": "/meetings/recurrences",
-    "translations": "/translations",
-    "publications-revision": "/publications/revision",
-    "comment-feeds": "/comment-feeds",
-    "node-boards": "/node-boards",
-    "node-circles": "/node-circles",
-    "node-meetings": "/node-meetings",
-    "node-members": "/node-members",
-    "node-roles": "/node-roles",
-    "node-roles-custom-fields": "/node-roles-custom-fields",
-    "node-roles-diagram": "/node-roles-diagram",
-    "node-tasks": "/node-tasks",
-    "node-tensions": "/node-tensions",
-    "node-translations": "/node-translations",
-    "webhooks": "/webhooks",
-    "authentication-saml": "/authentication/saml",
+    "whoami": "/v1/whoami",
+    "custom-fields-circle": "/v1/custom-fields",
+    "custom-fields-role": "/v1/custom-fields",
+    "custom-fields-user": "/v1/custom-fields",
+    "circles": "/v1/circles",
+    "circle-members": "/v1/circles/{id}/members",
+    "roles": "/v1/roles",
+    "role-templates": "/v1/role-templates",
+    "users": "/v1/users",
+    "memberships": "/v1/memberships",
+    "tensions": "/v1/tensions",
+    "meetings": "/v1/meetings",
+    "meeting-agenda-items": "/v1/meetings/{id}/agenda-items",
+    "tasks": "/v1/tasks",
+    "subtasks": "/v1/tasks",
+    "task-comments": "/v1/tasks/{id}/comments",
+    "projects": "/v1/projects",
+    "sections": "/v1/sections",
+    "labels": "/v1/labels",
+    "project-comments": "/v1/projects/{id}/comments",
+    "goals": "/v1/goals",
+    "goal-key-results": "/v1/goals/{id}/key-results",
+    "goal-comments": "/v1/goals/{id}/comments",
+    "time-periods": "/v1/time-periods",
+    "documents": "/v1/documents",
+    "document-content": "/v1/documents/{id}/content",
+    "document-comments": "/v1/documents/{id}/comments",
+    "audit-logs": "/v1/audit-logs",
 }
-endpoints = {
-    name: fields(BASE + sub)
-    for name, sub in sorted(ENDPOINTS.items())
-}
+
+# The contract names path parameters per resource ({circle_id}, {goal_id});
+# match routes with any parameter name.
+def find_route(route):
+    want = route.split("/")
+    for p in spec.get("paths", {}):
+        got = p.split("/")
+        if len(got) == len(want) and all(a == b or (a.startswith("{") and b.startswith("{")) for a, b in zip(got, want)):
+            return p
+    return route
+
+endpoints = {name: describe(find_route(route)) for name, route in sorted(ENDPOINTS.items())}
+
+# Routes published but not backed up: new data the tool may need to learn.
+# Role members and per-user memberships are already in roles.json
+# (?include=members) and memberships.json.
+known = {find_route(r) for r in ENDPOINTS.values()}
+known |= {find_route("/v1/roles/{id}/members"), find_route("/v1/users/{id}/memberships")}
+untracked = sorted(p for p, item in spec.get("paths", {}).items()
+                   if "get" in item and p not in known and p.startswith("/v1/")
+                   and not p.endswith("_id}") and "/structure-exports" not in p)
+endpoints["__untracked_get_routes__"] = {"fields": untracked, "params": []}
 
 print(json.dumps({
     "generated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "sources": {
-        "doc": {"url": "app.holaspirit.com/api/doc/", "version": spec.get("info", {}).get("version", "?")},
+        "openapi": {"url": "partner-api.talkspirit.com/v1/openapi.json", "version": spec.get("info", {}).get("version", "?")},
     },
     "endpoints": endpoints,
 }, indent=2))

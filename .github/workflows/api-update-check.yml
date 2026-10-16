@@ -8,7 +8,7 @@ on:
 # Least privilege: read-only at the workflow level; each job declares only what
 # it needs.
 #
-# Trust boundaries — drift.diff is derived from Holaspirit's public API docs,
+# Trust boundaries — drift.diff is derived from Talkspirit's public API contract,
 # which makes it untrusted input for the Claude prompt. The pipeline is split so
 # that code produced from that input never runs where a write-scoped credential
 # is reachable:
@@ -40,9 +40,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # The check compares Holaspirit's published OpenAPI spec (embedded in
-      # the public API doc page) against the committed baseline — no token,
-      # organization ID, or other credentials needed.
+      # The check compares the published OpenAPI contract of the Talkspirit
+      # Partner API (/v1/openapi.json, public) against the committed baseline —
+      # no API key or other credentials needed.
       - name: Check API schema
         id: check
         run: |
@@ -112,7 +112,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            The daily Holaspirit API schema check detected drift between the
+            The daily Talkspirit Partner API schema check detected drift between the
             published OpenAPI spec and the stored baseline. The diff is in
             `drift.diff` (already in the working tree), and
             `docs/api-snapshot.json` has been updated to the new schema.
@@ -122,6 +122,10 @@ jobs:
             2. Update `internal/api/endpoints.go` (and the endpoint list in
                `scripts/check-api-schema.sh`) so removed endpoints no longer
                break the backup and renamed/new replacements are covered.
+               Routes listed under `__untracked_get_routes__` are published
+               read routes the tool does not back up yet — add them when they
+               hold organization data. If a field that `internal/compare` reads
+               was renamed or removed, adapt `internal/compare` as well.
             3. Follow the conventions in CLAUDE.md ("Extending: Adding a New Endpoint").
             4. Run `go build ./...` and `go vet ./...` and fix any errors you
                introduced. The workflow runs the test suite afterwards in a
@@ -232,7 +236,7 @@ jobs:
           git apply --index "$PATCH_DIR/changes.patch"
 
           if [ "$DRIFT" = "true" ]; then
-            TITLE="fix: adapt to Holaspirit API drift ($(date -u +%Y-%m-%d))"
+            TITLE="fix: adapt to Talkspirit API drift ($(date -u +%Y-%m-%d))"
           else
             TITLE="chore: commit initial API schema baseline"
           fi
@@ -240,7 +244,7 @@ jobs:
           git push origin "$BRANCH"
 
           {
-            echo "## Holaspirit API schema update"
+            echo "## Talkspirit Partner API schema update"
             echo
             if [ "$DRIFT" = "true" ]; then
               echo "The daily API schema check found drift against the stored baseline."

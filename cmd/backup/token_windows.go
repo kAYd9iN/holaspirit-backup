@@ -4,6 +4,7 @@ package main
 
 import "github.com/kAYd9iN/holaspirit-backup/internal/credentials"
 
-func getToken() (string, error) {
+// storedToken reads the key from Windows Credential Manager.
+func storedToken() (string, error) {
 	return credentials.NewWinCredManager().GetToken()
 }

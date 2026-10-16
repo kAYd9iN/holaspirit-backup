@@ -1,20 +1,30 @@
-# holaspirit-backup
+# holaspirit-backup → talkspirit-backup
 
-Automatisiertes Backup-Werkzeug für alle Holaspirit-Organisationsdaten als JSON-Dateien  
-mit SHA256-Integritätsmanifest und HMAC-SHA-256-Signatur.
+Automatisiertes Backup-Werkzeug für die Organisationsdaten von **Talkspirit** (über die
+offizielle [Partner API](https://partner-api.talkspirit.com/v1/docs)) als JSON-Dateien mit
+SHA256-Integritätsmanifest und HMAC-SHA-256-Signatur, plus ein Vergleich gegen ein altes
+Holaspirit-Backup, der zeigt, was bei der Migration verloren ging.
+
+> Holaspirit wurde durch Talkspirit ersetzt; die Holaspirit-API wird am 30.10.2026 abgeschaltet.
+> **v0.5.0 ist der letzte Holaspirit-Release** — Holaspirit-Backups damit prüfen (`verify`)
+> und als Referenz für `compare` verwenden. Ab v0.6.0 sichert das Tool Talkspirit.
 
 ## Features
 
-- Sichert 47 Organisations-Endpunkte der Holaspirit-API (GET-only, kein Schreibzugriff):
-  jede Liste vollständig über alle Seiten, inklusive der mitgelieferten verknüpften Inhalte
-  (`*-linked.json`, z. B. Verantwortlichkeiten, Domains und Richtlinien der Rollen)
-- Vollständigkeitsprüfung: meldet die API mehr Einträge als geliefert wurden, wird das im
-  Manifest als `incomplete` markiert und der Lauf endet mit Exit-Code 1
-- SHA256-Hashes pro Datei + HMAC-SHA-256-Manifest-Signatur
-- Bounded Worker Pool (5 Goroutinen), Rate-Limiter (250 req / 5 min)
+- Sichert alle lesbaren Ressourcen der Partner API (GET-only, kein Schreibzugriff): Kreise,
+  Rollen (inkl. Purpose, Domänen, Accountabilities, Besetzung), Rollen-Vorlagen, Personen,
+  Mitgliedschaften, Spannungen, Meetings mit Traktanden, Aufgaben mit Unteraufgaben und
+  Kommentaren, Projekte mit Spalten und Labels, Ziele mit Key Results, Zeiträume, Dokumente
+  mit Inhalt und Kommentaren, benutzerdefinierte Felder, Audit-Log
+- Cursor-Paginierung über alle Seiten; Abbruch am 10'000er-Limit der API wird als
+  `incomplete` markiert (Exit-Code 1), nie als vollständig
+- Rate-Limit-bewusst: richtet sich nach `X-RateLimit-*` und `Retry-After` (Standard ca.
+  100 Anfragen/Minute pro Schlüssel)
+- `backup compare` — Abgleich Holaspirit-Backup ↔ Talkspirit-Backup mit Einordnung, ob eine
+  Abweichung nach der Migration bewusst bearbeitet wurde oder auf die Migration zurückgeht
+- SHA256-Hashes pro Datei + HMAC-SHA-256-Manifest-Signatur, `backup verify --dir <path>`
 - Plattform-Binaries: Linux amd64/arm64, Windows amd64
-- Token via Windows Credential Manager (DPAPI-geschützt) oder Umgebungsvariable
-- `backup verify --dir <path>` — Integritätsprüfung nach dem Backup
+- API-Schlüssel via `TALKSPIRIT_API_KEY` oder Windows Credential Manager (DPAPI-geschützt)
 
 ## Installation
 
@@ -43,27 +53,50 @@ cosign verify-blob \
 
 ## Konfiguration
 
-**API-Token hinterlegen (Windows):**
+**API-Schlüssel anlegen:** Ein Talkspirit-Administrator aktiviert das API-Modul und erstellt
+unter `https://<subdomain>.talkspirit.com/app/admin/api-keys` einen Schlüssel
+(`ts_partner_…`, wird nur einmal angezeigt) mit **allen Lese-Scopes**: `users:read`,
+`circles:read`, `roles:read`, `tasks:read`, `projects:read`, `goals:read`, `documents:read`,
+`meetings:read`, `tensions:read`, `audit_log:read`. Keine Schreib-Scopes vergeben.
+
+> Der Schlüssel liest nur, was sein technischer Benutzer sehen darf. Für ein vollständiges
+> Backup muss er Admin-Rechte haben (Audit-Log nur für Admins); private Inhalte anderer
+> Personen bleiben unsichtbar.
 
 ```powershell
-cmdkey /generic:holaspirit-backup /user:api /pass:api:DEIN_TOKEN_HIER
+# Variante A: Umgebungsvariable (hat Vorrang)
+$env:TALKSPIRIT_API_KEY = "ts_partner_…"
+# Variante B: Windows Credential Manager
+cmdkey /generic:talkspirit-backup /user:api /pass:ts_partner_…
 ```
-
-> Für eine vollständige Sicherung muss der Token zu einem **Holaspirit-Admin** gehören.
-> Webhooks, SAML-Konfiguration u. a. sind sonst nicht lesbar; diese Endpunkte schlagen dann
-> fehl (Exit-Code 1). Was bewusst nicht gesichert wird, steht in
-> [docs/architecture.md](docs/architecture.md#was-gesichert-wird).
 
 **Backup ausführen:**
 
 ```powershell
-backup.exe --output C:\Backups\holaspirit
+backup.exe --dry-run                          # Schlüssel + Scopes prüfen
+backup.exe --output C:\Backups\talkspirit
 ```
+
+Ein vollständiger Lauf macht pro Meeting, Aufgabe, Ziel, Projekt und Dokument eigene
+Anfragen (Traktanden, Kommentare) und dauert bei grossen Organisationen mehrere Stunden;
+`--quick` lässt diese Einzelabrufe weg.
+
+**Mit dem Holaspirit-Backup vergleichen:**
+
+```powershell
+backup.exe compare --holaspirit C:\Backups\holaspirit\2026-10-14T15-04-21 `
+                   --talkspirit C:\Backups\talkspirit\2026-10-16T18-00-00 `
+                   --migrated-at 2026-10-15 --out C:\Backups\vergleich
+```
+
+Ergebnis: `vergleich.md` (Bericht) und `befunde.csv` (alle Befunde, Excel-tauglich). Beide
+enthalten Namen und E-Mail-Adressen — vertraulich behandeln. Wie der Abgleich arbeitet, steht
+in [docs/architecture.md](docs/architecture.md#vergleich-holaspirit--talkspirit).
 
 **Integrität prüfen:**
 
 ```powershell
-backup.exe verify --dir C:\Backups\holaspirit\2026-03-06T02-00-00
+backup.exe verify --dir C:\Backups\talkspirit\2026-10-16T18-00-00
 ```
 
 ## CLI-Referenz
@@ -71,15 +104,20 @@ backup.exe verify --dir C:\Backups\holaspirit\2026-03-06T02-00-00
 ```
 backup [Optionen]
 backup verify --dir <path>
+backup compare --holaspirit <dir> --talkspirit <dir> [--out <dir>] [--migrated-at YYYY-MM-DD[THH:MM]]
 
 Optionen:
   --output PATH     Backup-Zielverzeichnis (Standard: ./backup)
-  --org-id ID       Organisations-ID (Standard: $HOLASPIRIT_ORG_ID; sonst via /api/me —
-                    Organisations-Tokens dürfen /api/me oft nicht lesen, dann angeben)
-  --dry-run         Verbindung testen ohne Daten zu schreiben
-  --timeout MIN     Gesamt-Timeout in Minuten (Standard: 120)
+  --quick           Kommentare und Traktanden nicht einzeln abrufen
+  --dry-run         Schlüssel prüfen (GET /v1/whoami), nichts schreiben
+  --timeout MIN     Gesamt-Timeout in Minuten (Standard: 480)
+  --base-url URL    API-Host (Standard: https://partner-api.talkspirit.com)
   --audit           Hostname + Benutzer im Manifest erfassen (Audit-Trail)
   --version         Version anzeigen
+
+compare:
+  --migrated-at     Ende der Migration (UTC); leer = aus den Talkspirit-Daten geschätzt
+  --out             Zielordner für vergleich.md + befunde.csv (Standard: ./vergleich)
 ```
 
 ## Security & Trust
@@ -105,9 +143,10 @@ Sicherheitslücken bitte per [GitHub Private Vulnerability Reporting](https://gi
 
 ## Self-Update-Schlaufe
 
-Ein täglicher Workflow (`api-update-check`) vergleicht Holaspirits publizierte
-OpenAPI-Spec (aus der öffentlichen `/api/doc/`-Seite) gegen die committete
-Baseline (`docs/api-snapshot.json`) — ohne Credentials. Bei Drift passt Claude
+Ein täglicher Workflow (`api-update-check`) vergleicht den publizierten OpenAPI-Vertrag
+der Talkspirit Partner API (`/v1/openapi.json`, öffentlich) gegen die committete
+Baseline (`docs/api-snapshot.json`) — ohne Credentials. Neue Lese-Routen, die das Tool
+noch nicht sichert, erscheinen dort unter `__untracked_get_routes__`. Bei Drift passt Claude
 den Code automatisch an und öffnet einen PR; nach dem Merge erzeugt `auto-release`
 einen versionierten, signierten Release (sofern das Security-Gate frei ist).
 

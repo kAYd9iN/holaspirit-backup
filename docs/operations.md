@@ -4,9 +4,12 @@
 
 - Windows 10/11 oder Windows Server 2019+ (für Windows-Betrieb)
 - Linux: amd64 oder arm64 (alternativ)
-- Netzwerkzugang zu `app.holaspirit.com` (HTTPS/443)
-- Holaspirit Read-Only API Token
+- Netzwerkzugang zu `partner-api.talkspirit.com` (HTTPS/443)
+- Talkspirit-API-Schlüssel (`ts_partner_…`) mit allen Lese-Scopes, siehe unten
 - Veeam (für Weiterverarbeitung des Backup-Verzeichnisses)
+
+> Holaspirit-Backups (bis v0.5.0) bleiben mit dem v0.5.0-Binary prüfbar
+> (`verify`, Holaspirit-Token nötig). Die Holaspirit-API wird am 30.10.2026 abgeschaltet.
 
 ## Installation
 
@@ -24,14 +27,14 @@ Die fertigen Binaries von [GitHub Releases](https://github.com/kAYd9iN/holaspiri
 
 ```powershell
 # Binary speichern unter:
-C:\Tools\holaspirit-backup\backup.exe
+C:\Tools\talkspirit-backup\backup.exe
 ```
 
 **Linux:**
 
 ```bash
 chmod +x backup-linux-amd64
-sudo mv backup-linux-amd64 /usr/local/bin/holaspirit-backup
+sudo mv backup-linux-amd64 /usr/local/bin/talkspirit-backup
 ```
 
 ### 2. Integrität prüfen
@@ -51,75 +54,76 @@ cosign verify-blob \
 
 Siehe [docs/supply-chain.md](supply-chain.md) für Details zur Verifikation.
 
-### 3. API-Token hinterlegen
+### 3. API-Schlüssel anlegen und hinterlegen
 
-**Windows — PowerShell als Administrator:**
+Ein Talkspirit-Administrator:
+
+1. aktiviert das **API-Modul** der Organisation (ohne Modul antwortet jede Anfrage mit 401),
+2. erstellt unter `https://<subdomain>.talkspirit.com/app/admin/api-keys` einen Schlüssel mit
+   den Scopes `users:read`, `circles:read`, `roles:read`, `tasks:read`, `projects:read`,
+   `goals:read`, `documents:read`, `meetings:read`, `tensions:read`, `audit_log:read` —
+   **keine** Schreib-Scopes,
+3. gibt den Schlüssel (wird nur einmal angezeigt) sicher weiter.
+
+Der Schlüssel arbeitet als eigener technischer Benutzer und liest nur, was dieser sehen darf.
+Für ein vollständiges Backup braucht er Admin-Rechte (das Audit-Log ist nur für Admins lesbar).
+
+**Windows — Credential Manager:**
 
 ```powershell
-cmdkey /generic:holaspirit-backup /user:api /pass:api:DEIN_TOKEN_HIER
+cmdkey /generic:talkspirit-backup /user:api /pass:ts_partner_DEIN_SCHLUESSEL
 ```
 
-Token-Verwaltung:
+Schlüssel-Verwaltung:
 
 ```powershell
-# Token aktualisieren
-cmdkey /generic:holaspirit-backup /user:api /pass:api:NEUER_TOKEN
-
-# Token entfernen
-cmdkey /delete:holaspirit-backup
-
-# Token prüfen (ob vorhanden)
-cmdkey /list:holaspirit-backup
+cmdkey /generic:talkspirit-backup /user:api /pass:ts_partner_NEUER_SCHLUESSEL   # ersetzen
+cmdkey /delete:talkspirit-backup                                                 # entfernen
+cmdkey /list:talkspirit-backup                                                   # vorhanden?
 ```
 
-**Linux:**
+**Alternativ (alle Plattformen) — Umgebungsvariable, hat Vorrang:**
 
 ```bash
-export HOLASPIRIT_TOKEN="api:DEIN_TOKEN_HIER"
+export TALKSPIRIT_API_KEY="ts_partner_DEIN_SCHLUESSEL"
 ```
 
 ### 4. Backup-Verzeichnis festlegen
 
 ```powershell
-mkdir C:\Backups\holaspirit
+mkdir C:\Backups\talkspirit
 ```
 
 ### 5. Ersten Testlauf durchführen
 
 ```powershell
-C:\Tools\holaspirit-backup\backup.exe --dry-run
+C:\Tools\talkspirit-backup\backup.exe --dry-run
 ```
 
 Erwartete Ausgabe:
 
 ```
-time=2026-03-06T02:00:00Z level=INFO msg="organization confirmed" id=org_xxx
-time=2026-03-06T02:00:00Z level=INFO msg="dry run successful — connection OK"
+level=INFO msg="API key OK" tenant=… partner=…
+level=INFO msg="dry run successful — connection OK"
 ```
+
+Fehlen Scopes, meldet der Testlauf `the key lacks read scopes` mit der Liste.
 
 Echtes Backup:
 
 ```powershell
-C:\Tools\holaspirit-backup\backup.exe --output C:\Backups\holaspirit
+C:\Tools\talkspirit-backup\backup.exe --output C:\Backups\talkspirit
 ```
 
-Erwartete Ausgabe:
-
-```
-time=2026-03-06T02:00:00Z level=INFO msg="organization confirmed" id=org_xxx
-time=2026-03-06T02:00:00Z level=INFO msg="backup directory created" path=C:\Backups\holaspirit\2026-03-06T02-00-00
-time=2026-03-06T02:00:00Z level=INFO msg="fetching endpoints" count=47
-time=2026-03-06T02:00:45Z level=INFO msg="endpoint ok" name=circles records=42 files=2
-...
-time=2026-03-06T02:00:46Z level=INFO msg="backup complete" dir=C:\Backups\holaspirit\2026-03-06T02-00-00
-```
+Der erste vollständige Lauf dauert bei grossen Organisationen **mehrere Stunden**: pro Meeting,
+Aufgabe, Projekt, Ziel und Dokument werden Traktanden bzw. Kommentare einzeln abgerufen, und die
+API erlaubt rund 100 Anfragen pro Minute. `--quick` lässt diese Einzelabrufe weg (Minuten statt
+Stunden), die Traktanden fehlen dann aber auch im Vergleich.
 
 ## Integrität prüfen
 
-Nach jedem Backup oder vor der Verwendung der Daten kann die Integrität geprüft werden:
-
 ```powershell
-backup.exe verify --dir C:\Backups\holaspirit\2026-03-06T02-00-00
+backup.exe verify --dir C:\Backups\talkspirit\2026-10-16T18-00-00
 ```
 
 | Exit-Code | Bedeutung |
@@ -128,24 +132,44 @@ backup.exe verify --dir C:\Backups\holaspirit\2026-03-06T02-00-00
 | 1 | Signatur ungültig oder Hash-Abweichung — Backup kompromittiert |
 | 2 | Ungültige Argumente |
 
+## Vergleich mit dem Holaspirit-Backup
+
+```powershell
+backup.exe compare `
+  --holaspirit C:\Temp\holaspirit-backup-data `
+  --talkspirit C:\Backups\talkspirit\2026-10-16T18-00-00 `
+  --migrated-at 2026-10-15T06:00 `
+  --out C:\Backups\vergleich
+```
+
+- `--migrated-at`: Ende der Migration in UTC. Ohne Angabe wird es geschätzt (der Tag, an dem die
+  meisten Kreise/Rollen/Personen in Talkspirit angelegt wurden) und im Bericht als „geschätzt“
+  ausgewiesen. Davon hängt ab, ob eine Abweichung als vermutlich gewollt oder als Verdacht auf
+  einen Migrationsfehler eingeordnet wird.
+- Ergebnis: `vergleich.md` und `befunde.csv` (Semikolon, UTF-8, öffnet direkt in Excel). Beide
+  enthalten Namen und E-Mail-Adressen: nicht ins Repository, nicht in Tickets kopieren.
+- Vorgehen beim Auswerten: zuerst die Abschnitte „Verdacht auf Migrationsfehler“ (Rollen,
+  Accountabilities, Besetzungen, Richtlinien), dann Meetings/Spannungen/Aufgaben über die CSV
+  filtern (Spalte „Verdacht Migrationsfehler“ = ja).
+
 ## Windows Task Scheduler (Cronjob)
 
 ### Automatisch einrichten (PowerShell als Admin)
 
 ```powershell
 $action = New-ScheduledTaskAction `
-    -Execute "C:\Tools\holaspirit-backup\backup.exe" `
-    -Argument "--output C:\Backups\holaspirit"
+    -Execute "C:\Tools\talkspirit-backup\backup.exe" `
+    -Argument "--output C:\Backups\talkspirit"
 
-$trigger = New-ScheduledTaskTrigger -Daily -At "02:00"
+$trigger = New-ScheduledTaskTrigger -Daily -At "01:00"
 
 $settings = New-ScheduledTaskSettingsSet `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 1) `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 8) `
     -RestartCount 3 `
     -RestartInterval (New-TimeSpan -Minutes 5)
 
 Register-ScheduledTask `
-    -TaskName "Holaspirit Backup" `
+    -TaskName "Talkspirit Backup" `
     -Action $action `
     -Trigger $trigger `
     -Settings $settings `
@@ -155,15 +179,15 @@ Register-ScheduledTask `
 ### Manuell ausführen
 
 ```powershell
-Start-ScheduledTask -TaskName "Holaspirit Backup"
+Start-ScheduledTask -TaskName "Talkspirit Backup"
 ```
 
 ## Veeam-Integration
 
 Veeam-Job so konfigurieren, dass er das Backup-Verzeichnis einschließt:
 
-- **Pfad:** `C:\Backups\holaspirit`
-- **Empfehlung:** Veeam-Job nach dem Holaspirit-Backup-Job einplanen (z.B. 03:00 Uhr)
+- **Pfad:** `C:\Backups\talkspirit`
+- **Empfehlung:** Veeam-Job nach dem Backup-Job einplanen (Laufzeit des Backups beachten)
 - Veeam übernimmt: Verschlüsselung, Komprimierung, Off-site-Speicherung
 
 ## CLI-Referenz
@@ -171,52 +195,56 @@ Veeam-Job so konfigurieren, dass er das Backup-Verzeichnis einschließt:
 ```
 backup [Optionen]
 backup verify --dir <path>
+backup compare --holaspirit <dir> --talkspirit <dir> [--out <dir>] [--migrated-at <zeit>]
 
 Hauptbefehl:
   --output PATH     Backup-Zielverzeichnis (Standard: ./backup)
-  --org-id ID       Organisations-ID (Standard: $HOLASPIRIT_ORG_ID; sonst automatisch via /api/me)
-  --dry-run         Verbindung testen ohne Daten zu schreiben
-  --timeout MIN     Gesamt-Timeout in Minuten (Standard: 120, 0 = kein Timeout)
+  --quick           Kommentare und Traktanden nicht einzeln abrufen
+  --dry-run         Schlüssel prüfen (GET /v1/whoami), nichts schreiben
+  --timeout MIN     Gesamt-Timeout in Minuten (Standard: 480, 0 = kein Timeout)
+  --base-url URL    API-Host (Standard: https://partner-api.talkspirit.com;
+                    Staging: https://partner-api.ghostspirit.net)
   --audit           Hostname + Benutzer im Manifest erfassen (Audit-Trail)
   --version         Version anzeigen
   --help            Hilfe anzeigen
 
 Subcommand verify:
   --dir PATH        Backup-Verzeichnis prüfen (Pflichtfeld)
+
+Subcommand compare:
+  --holaspirit DIR  Holaspirit-Backup (v0.5.0)
+  --talkspirit DIR  Talkspirit-Backup
+  --out DIR         Zielordner für vergleich.md + befunde.csv (Standard: ./vergleich)
+  --migrated-at T   Ende der Migration, YYYY-MM-DD oder YYYY-MM-DDTHH:MM (UTC)
 ```
 
 ## Fehlerbehandlung
 
-Das Tool gibt Exit-Code 1 zurück wenn mindestens ein Endpunkt fehlgeschlagen ist.  
-Windows Task Scheduler protokolliert diesen.
+Das Tool gibt Exit-Code 1 zurück, wenn mindestens ein Endpunkt fehlgeschlagen oder
+unvollständig ist. Windows Task Scheduler protokolliert diesen.
 
-Fehlgeschlagene Endpunkte werden im Manifest als `"status": "failed"` markiert —  
+Fehlgeschlagene Endpunkte werden im Manifest als `"status": "failed"` markiert —
 der Rest des Backups bleibt verwendbar.
 
 ### Erster Lauf: Ergebnis prüfen
 
-Nach dem ersten Lauf (und nach jedem Update) kurz prüfen:
-
-1. **Token:** von einem Holaspirit-Admin, sonst schlagen Admin-Endpunkte (Webhooks, SAML) fehl.
-   Darf der Token `/api/me` nicht lesen (HTTP 403, typisch für Organisations-Tokens), muss die
-   Organisations-ID angegeben werden: `--org-id <id>` oder Umgebungsvariable `HOLASPIRIT_ORG_ID`.
-   Die ID steht in der Holaspirit-URL (`app.holaspirit.com/o/<id>/…`).
+1. **Schlüssel:** `--dry-run` muss `API key OK` melden und darf keine fehlenden Scopes nennen.
+   HTTP 401 heisst: Schlüssel falsch/widerrufen oder API-Modul nicht aktiviert.
 2. **Log durchsehen**, die Meldungen bedeuten:
 
    | Meldung | Bedeutung |
    |---------|-----------|
-   | `endpoint ok` | vollständig gesichert; `records` = Anzahl Einträge |
-   | `endpoint incomplete` | Daten geschrieben, aber nicht alles abrufbar: weniger Einträge als gemeldet, oder die API-Obergrenze von 10'000 Einträgen erreicht (Details in der Meldung) |
-   | `endpoint not available` | Funktion in dieser Organisation nicht aktiv (z. B. Übersetzungen) — nichts zu sichern, kein Fehler |
-   | `endpoint failed` | nichts gesichert; Grund in der Meldung (z. B. HTTP 403 = Token ohne Berechtigung, „page parameter seems to be ignored“ = Paginierung passt nicht zur API) |
+   | `endpoint ok` | vollständig gesichert; `records` = Anzahl Einträge, `sub-resources` = Einträge pro Unter-Ressource |
+   | `endpoint incomplete` | Daten geschrieben, aber nicht alles abrufbar: 10'000er-Grenze der API oder einzelne Unter-Ressourcen fehlgeschlagen (Details in der Meldung) |
+   | `endpoint not available` | Audit-Log für diesen Schlüssel nicht lesbar (kein Admin) — kein Fehler |
+   | `endpoint failed` | nichts gesichert; Grund in der Meldung (z. B. „lacks the … scope“) |
 
-3. **Plausibilität:** `records` von `members`, `roles`, `circles` mit den Zahlen in der
-   Holaspirit-Oberfläche vergleichen. Steht bei einer grossen Organisation überall eine runde
-   Zahl wie 10, 20 oder 100, ist die Paginierung verdächtig.
+3. **Plausibilität:** `records` von `users`, `roles`, `circles` mit der Talkspirit-Oberfläche
+   vergleichen.
 4. Bei `incomplete` oder `failed`: die Log-Zeilen (sie enthalten keine Organisationsdaten) an die
    Maintainer weitergeben. Den Backup-Ordner selbst nicht weitergeben, er enthält Organisationsdaten.
 
 ## Backup-Aufbewahrung
 
-Das Tool selbst löscht **keine** alten Backups.  
+Das Tool selbst löscht **keine** alten Backups.
 Aufbewahrungsstrategie wird vollständig durch Veeam verwaltet.
