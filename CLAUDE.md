@@ -1,6 +1,13 @@
-# holaspirit-backup
+# holaspirit-backup (now: talkspirit-backup)
 
-Backup tool for Holaspirit organisational data. Fetches 47 GET-only organization endpoints (every page, plus the side-loaded `linked` entities) → timestamped JSON files + HMAC-SHA-256 signed manifest.
+Backup tool for **Talkspirit** organisational data via the official Partner API
+(`https://partner-api.talkspirit.com/v1`, key `ts_partner_…`). Fetches every read route
+(cursor pagination, plus per-item sub-resources) → timestamped JSON files + HMAC-SHA-256
+signed manifest. `backup compare` matches a Holaspirit backup (v0.5.0) against a Talkspirit
+backup to find what the Holaspirit → Talkspirit migration lost.
+
+Holaspirit was replaced by Talkspirit; the Holaspirit API is shut down on 2026-10-30.
+**v0.5.0 is the last Holaspirit release.** The repo/module name stays `holaspirit-backup`.
 
 ## Commands
 
@@ -11,8 +18,12 @@ go test ./...
 # Build
 go build -o backup ./cmd/backup
 
-# Run backup
-./backup --org-id <org> --output ./out
+# Run backup (key from $TALKSPIRIT_API_KEY or Windows Credential Manager "talkspirit-backup")
+./backup --dry-run
+./backup --output ./out            # --quick skips per-item comments/agenda items
+
+# Compare with a Holaspirit backup (writes vergleich.xlsx — contains PII)
+./backup compare --holaspirit <hs-dir> --talkspirit <ts-dir> --migrated-at 2026-10-15 --out ./vergleich
 
 # Verify manifest
 ./backup verify --dir ./out/2026-03-07_120000
@@ -22,14 +33,16 @@ go build -o backup ./cmd/backup
 
 | Path | Purpose |
 |------|---------|
-| `internal/api/endpoints.go` | All 47 endpoints + deliberate exclusions (edit here to add/remove) |
-| `internal/api/client.go` | HTTP client — GET-only, explicit TLS≥1.2, rate limiter 250/5min, retry 429+5xx |
-| `internal/api/pagination.go` | Pagination per the published spec (`page`/`count`, top-level `pagination.pagesCount`/`nextPage`/`totalItems`; legacy `meta.pagination` still understood), `linked` de-duplication, repeated-page and completeness detection, item cap |
-| `internal/backup/runner.go` | Worker pool (5), fetches all endpoints, writes `<name>.json` + `<name>-linked.json` |
+| `internal/api/endpoints.go` | All Partner API routes + `Children` (per-item sub-resources) + deliberate exclusions |
+| `internal/api/client.go` | HTTP client — GET-only, TLS≥1.2, no redirects, pacing 1/650ms, honours `X-RateLimit-*` + `Retry-After`, RFC 7807 `code` → `StatusError.Problem` |
+| `internal/api/pagination.go` | `FetchAll`: cursor pagination (`next_cursor`/`has_more`), cursor-loop + repeated-page detection, 10k traversal cap (`400 INVALID_CURSOR`) → `ErrTraversalCap` with partial items |
+| `internal/backup/runner.go` | Worker pool (3), writes `<name>.json` and `<child>.json` (`[{parent_id, data}]`); `--quick` skips `Detail` children |
+| `internal/compare/` | Holaspirit ↔ Talkspirit matching on business keys (no shared IDs), classification against the cut-off date, prioritized German Excel report (overview, work list, defect list, sheet per area) |
+| `internal/xlsx/` | Dependency-free .xlsx writer (inline strings, fixed style palette, filters, validations) — no third-party lib, keeps vendor/CBOM untouched |
 | `internal/backup/manifest.go` | SHA256 per file + HMAC-SHA-256 .sig, error sanitization, hex-decoded verify |
 | `internal/storage/writer.go` | Timestamped dirs, 0600 files, path sanitising + symlink resolution |
-| `docs/api-snapshot.json` | Baseline of Holaspirit API field structure (for drift detection) |
-| `scripts/check-api-schema.sh` | Credential-free API drift check vs published OpenAPI spec |
+| `docs/api-snapshot.json` | Baseline of the Partner API contract (fields + query params per route, untracked routes) |
+| `scripts/check-api-schema.sh` | Credential-free drift check vs `/v1/openapi.json` |
 | `scripts/check-cbom.sh` | Anti-staleness: every crypto import must be in the CBOM |
 | `docs/cbom.cdx.json` | CycloneDX 1.6 Cryptography BoM (hand-authored) |
 | `policy/nist-crypto.rego` | OPA/conftest NIST crypto policy (gates the release) |
@@ -40,10 +53,10 @@ go build -o backup ./cmd/backup
 - **No token exposure**: no `Token()` accessor, token never in logs/errors
 - **TLS**: explicit minimum TLS 1.2, `InsecureSkipVerify` hard-false
 - **File perms**: 0600 files, 0750 dirs
-- **HMAC key**: domain-separated (`holaspirit-backup-manifest-v1` prefix)
+- **HMAC key**: domain-separated (`holaspirit-backup-manifest` prefix, kept unchanged so `verify` still checks old Holaspirit backups given the Holaspirit token)
 - **Log-injection guard**: API/operator values sanitized before logging
 - **Symlink guard**: output dir resolved + containment-checked before writing
-- **Worker pool**: 5 bounded goroutines; per-endpoint item cap bounds memory
+- **Worker pool**: 3 bounded goroutines (the quota is per key); per-endpoint item cap bounds memory
 - **CBOM**: real crypto surface in `docs/cbom.cdx.json`, checked against NIST
   SP 800-131A via OPA/conftest; non-approved algorithm or TLS<1.2 gates the release
 - **vendor/** checked in for supply-chain safety
@@ -67,8 +80,8 @@ go build -o backup ./cmd/backup
 
 ```
 api-update-check (daily 06:00 UTC — no credentials needed)
-  → compares Holaspirit's PUBLISHED OpenAPI spec (embedded in the public
-    /api/doc/ page) against docs/api-snapshot.json
+  → compares the Talkspirit Partner API's PUBLISHED contract
+    (/v1/openapi.json) against docs/api-snapshot.json
   → drift detected → job `check`: Claude adapts internal/api/endpoints.go
     (needs ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) → patch artifact
   → job `verify`: build + race tests on the patch (read-only, no secrets)
@@ -85,7 +98,7 @@ api-update-check (daily 06:00 UTC — no credentials needed)
   security-gate now passes (release v0.2.0 shipped). It will block again if any
   new `security`-labeled issue is opened — by design
 - Exit 2 (spec download failed) fails the job; no snapshot is written
-- Trust split: `drift.diff` comes from Holaspirit's public docs (untrusted). The `check`
+- Trust split: `drift.diff` comes from Talkspirit's public contract (untrusted). The `check`
   job has no persisted git credentials, and Claude is limited to Read/Edit/Write/Glob/
   Grep + `go build`/`go vet` (no `go test`, it executes code). Tests run in `verify`
   (no secrets, no OIDC, no Go cache). Only `pr` sees REPO_PAT and it runs no patch code.
@@ -115,7 +128,7 @@ api-update-check (daily 06:00 UTC — no credentials needed)
 - ✅ Secrets CLAUDE_CODE_OAUTH_TOKEN + REPO_PAT set; SCORECARD_ENABLED=true
 - ✅ "Allow auto-merge" enabled; `main-protection` ruleset active (PR + checks + squash-only); Actions cannot approve PRs
 - ✅ Secret scanning + push protection + private vulnerability reporting on
-- HOLASPIRIT_TOKEN / HOLASPIRIT_ORG_ID are **no longer needed** (drift check reads the public spec)
+- No API key is needed in CI (drift check reads the public contract)
 - Optional, still open: SCORECARD_TOKEN (improves Branch-Protection check only)
 
 ## Commit signing — not enforced (by design)
@@ -134,7 +147,7 @@ without a key, strict mode incompatible with bot commits).
 - Design & Architektur (ID: 2326535)
 - Betrieb & Installation (ID: 2490371)
 
-## Live-run findings (2026-10-14, first real organization)
+## Holaspirit live-run findings (2026-10-14, v0.5.0 — historic)
 
 - Pagination per spec works (533 roles, 4081 meetings, 5490 tasks).
 - **10,000 result cap**: tensions/node-tensions stopped at exactly 10,000 with totalItems capped
@@ -147,10 +160,10 @@ without a key, strict mode incompatible with bot commits).
 
 ## Extending: Adding a New Endpoint
 
-1. Add entry to `orgCollections` in `internal/api/endpoints.go` (`paginated: true` only if the
-   spec's response schema has a `pagination` block)
-2. Add the same name → path to `ENDPOINTS` in `scripts/check-api-schema.sh`
+1. Add an entry to `endpoints` in `internal/api/endpoints.go` (`Limit` when the route's maximum
+   is below 199; a per-item sub-resource goes into `Children`, `Detail: true` if `--quick` may skip it)
+2. Add the same name → OpenAPI route to `ENDPOINTS` in `scripts/check-api-schema.sh`
    (`TestDriftCheckCoversAllEndpoints` fails otherwise)
-3. Run `go test ./internal/api/` to verify
-4. Update `docs/api-snapshot.json` baseline: run `scripts/check-api-schema.sh` locally
-5. Commit + push → CI validates
+3. Run `go test ./internal/...`
+4. Regenerate `docs/api-snapshot.json`: delete it and run `scripts/check-api-schema.sh`
+5. If `internal/compare` should use the new data, extend `loadTS` and the matching area

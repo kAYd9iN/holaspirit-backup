@@ -19,7 +19,7 @@ Holaspirit API  ──TLS──▶  HTTP client (GET-only)  ──▶  JSON writ
 | Input / component | Trusted? | Notes |
 |-------------------|----------|-------|
 | API token | Trusted secret | Loaded from OS credential store or env; never logged, never written to disk. |
-| TLS connection to `app.holaspirit.com` | Trusted after verification | Min TLS 1.2, certificate verification enforced (cannot be disabled). |
+| TLS connection to `partner-api.talkspirit.com` | Trusted after verification | Min TLS 1.2, certificate verification enforced (cannot be disabled). |
 | **API response content** | **Untrusted** | The JSON bodies are stored verbatim. A compromised or misbehaving API could return adversarial field values. The tool does not interpret or execute them. |
 | `--output` path | Operator-controlled | Sanitized; symlinks resolved; writes are contained to the timestamped backup directory. |
 | `--dir` path (verify) | Operator-controlled | Resolved to an absolute, symlink-free directory and required to exist before reading. |

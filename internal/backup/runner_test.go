@@ -17,86 +17,124 @@ import (
 	"github.com/kAYd9iN/holaspirit-backup/internal/storage"
 )
 
-func TestRunner_FetchesAllEndpoints(t *testing.T) {
-	fetched := make(map[string]bool)
+func newRunnerClient(srv *httptest.Server) *api.Client {
+	c := api.NewClient(srv.URL, "api:test")
+	c.MaxRetries = 0
+	c.SetPace(0, 0)
+	return c
+}
 
+func page(w http.ResponseWriter, items ...map[string]any) {
+	if items == nil {
+		items = []map[string]any{}
+	}
+	json.NewEncoder(w).Encode(map[string]any{"data": items, "pagination": map[string]any{"next_cursor": nil, "has_more": false}})
+}
+
+func TestRunner_FetchesAllEndpoints(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]interface{}{
-			"data": []interface{}{},
-			"meta": map[string]interface{}{
-				"pagination": map[string]interface{}{
-					"current_page": 1,
-					"total_pages":  1,
-				},
-			},
-		}
-		json.NewEncoder(w).Encode(resp)
+		page(w, map[string]any{"id": "x"})
 	}))
 	defer srv.Close()
 
-	client := api.NewClient(srv.URL, "api:test")
-	client.RetryDelay = 1 * time.Millisecond
-
-	tmpDir := t.TempDir()
-	w, _ := storage.NewWriter(tmpDir, time.Now())
-
-	endpoints := []api.Endpoint{
-		{Name: "circles", Path: "/api/organizations/org1/circles", Paginated: true},
-		{Name: "roles", Path: "/api/organizations/org1/roles", Paginated: true},
-	}
-
-	results := RunFetchers(context.Background(), client, w, endpoints)
-
+	w, _ := storage.NewWriter(t.TempDir(), time.Now())
+	results := RunFetchers(context.Background(), newRunnerClient(srv), w, []api.Endpoint{
+		{Name: "circles", Path: "/v1/circles"},
+		{Name: "roles", Path: "/v1/roles"},
+	}, Options{})
 	for _, r := range results {
-		fetched[r.Name] = r.Err == nil
+		if r.Err != nil || r.Records != 1 {
+			t.Errorf("%s: %+v", r.Name, r)
+		}
 	}
-
-	if !fetched["circles"] || !fetched["roles"] {
-		t.Errorf("not all endpoints fetched: %v", fetched)
-	}
-
-	if _, err := os.Stat(filepath.Join(w.Dir(), "circles.json")); os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(w.Dir(), "circles.json")); err != nil {
 		t.Error("circles.json not created")
 	}
 }
 
-// A paginated endpoint writes <name>.json plus <name>-linked.json, and a
-// shortfall against the API's reported total is surfaced, not swallowed.
-func TestRunner_WritesLinkedAndFlagsIncomplete(t *testing.T) {
+// Sub-resources are fetched per parent and written as [{parent_id, data}];
+// OnlyIf skips parents without children, Recursive follows sub-tasks down.
+func TestRunner_ChildrenRecursiveAndOnlyIf(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
-			"data":       []map[string]any{{"id": "r1", "accountabilities": []string{"a1"}}},
-			"linked":     map[string]any{"accountabilities": []map[string]string{{"id": "a1", "description": "text"}}},
-			"pagination": map[string]any{"totalItems": 2, "pagesCount": 1},
-		})
+		mu.Lock()
+		paths = append(paths, r.URL.Path+"?"+r.URL.Query().Get("parent_task_id"))
+		mu.Unlock()
+		switch r.URL.Query().Get("parent_task_id") {
+		case "":
+			page(w, map[string]any{"id": "t1", "subtask_count": 1}, map[string]any{"id": "t2", "subtask_count": 0})
+		case "t1":
+			page(w, map[string]any{"id": "s1", "subtask_count": 1})
+		case "s1":
+			page(w, map[string]any{"id": "s2", "subtask_count": 0})
+		default:
+			t.Errorf("unexpected request for %s", r.URL.RawQuery)
+			page(w)
+		}
 	}))
 	defer srv.Close()
+	w, _ := storage.NewWriter(t.TempDir(), time.Now())
+	res := RunFetchers(context.Background(), newRunnerClient(srv), w, []api.Endpoint{{
+		Name: "tasks", Path: "/v1/tasks?archived_status=all",
+		Children: []api.Child{{Name: "subtasks", Path: "/v1/tasks?archived_status=all&parent_task_id=%s", OnlyIf: "subtask_count", Recursive: true}},
+	}}, Options{})[0]
+	if res.Err != nil || res.Incomplete != nil {
+		t.Fatalf("%+v", res)
+	}
+	if res.Children["subtasks"] != 2 {
+		t.Errorf("subtasks = %d, want 2 (s1, s2)", res.Children["subtasks"])
+	}
+	var groups []ChildGroup
+	data, _ := os.ReadFile(filepath.Join(w.Dir(), "subtasks.json"))
+	if err := json.Unmarshal(data, &groups); err != nil || len(groups) != 2 || groups[0].ParentID != "t1" || groups[1].ParentID != "s1" {
+		t.Errorf("subtasks.json = %s", data)
+	}
+}
 
-	client := api.NewClient(srv.URL, "api:test")
-	client.MaxRetries = 0
-	w, err := storage.NewWriter(t.TempDir(), time.Now())
-	if err != nil {
-		t.Fatal(err)
+func TestRunner_QuickSkipsDetailChildren(t *testing.T) {
+	var calls int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		page(w, map[string]any{"id": "m1"})
+	}))
+	defer srv.Close()
+	w, _ := storage.NewWriter(t.TempDir(), time.Now())
+	res := RunFetchers(context.Background(), newRunnerClient(srv), w, []api.Endpoint{{
+		Name: "meetings", Path: "/v1/meetings",
+		Children: []api.Child{{Name: "meeting-agenda-items", Path: "/v1/meetings/%s/agenda-items", Detail: true}},
+	}}, Options{Quick: true})[0]
+	if calls != 1 || len(res.Files) != 1 {
+		t.Errorf("calls=%d files=%v, want only the meeting list", calls, res.Files)
 	}
+}
 
-	res := RunFetchers(context.Background(), client, w,
-		[]api.Endpoint{{Name: "roles", Path: "/api/organizations/org1/roles", Paginated: true}})[0]
-
-	if res.Err != nil {
-		t.Fatalf("unexpected error: %v", res.Err)
+// A failing sub-resource request keeps the rest and marks the endpoint incomplete.
+func TestRunner_ChildFailureMarksIncomplete(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/goals":
+			page(w, map[string]any{"id": "g1"}, map[string]any{"id": "g2"})
+		case "/v1/goals/g1/key-results":
+			page(w, map[string]any{"id": "k1"})
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	w, _ := storage.NewWriter(t.TempDir(), time.Now())
+	res := RunFetchers(context.Background(), newRunnerClient(srv), w, []api.Endpoint{{
+		Name: "goals", Path: "/v1/goals",
+		Children: []api.Child{{Name: "goal-key-results", Path: "/v1/goals/%s/key-results"}},
+	}}, Options{})[0]
+	if res.Err != nil || res.Incomplete == nil || !strings.Contains(res.Incomplete.Error(), "g2") {
+		t.Fatalf("%+v", res)
 	}
-	if got := fmt.Sprint(res.Files); got != "[roles.json roles-linked.json]" {
-		t.Errorf("files = %s", got)
-	}
-	if res.Incomplete == nil {
-		t.Error("expected Incomplete: API reported 2 items, 1 was delivered")
-	}
-	linked, err := os.ReadFile(filepath.Join(w.Dir(), "roles-linked.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(linked), `"description": "text"`) {
-		t.Errorf("roles-linked.json lacks the linked accountability: %s", linked)
+	if res.Children["goal-key-results"] != 1 {
+		t.Errorf("children = %v", res.Children)
 	}
 }
 
@@ -111,38 +149,23 @@ func TestRunFetchersMaxConcurrency(t *testing.T) {
 			peak = current
 		}
 		mu.Unlock()
-
 		time.Sleep(20 * time.Millisecond)
-
 		mu.Lock()
 		current--
 		mu.Unlock()
-
-		w.Write([]byte(`{"data":[],"meta":{}}`))
+		page(w)
 	}))
 	defer srv.Close()
 
-	// 20 endpoints to saturate the pool
-	endpoints := make([]api.Endpoint, 20)
+	endpoints := make([]api.Endpoint, 12)
 	for i := range endpoints {
-		endpoints[i] = api.Endpoint{
-			Name:      fmt.Sprintf("ep%d", i),
-			Path:      "/api/test",
-			Paginated: false,
-		}
+		endpoints[i] = api.Endpoint{Name: fmt.Sprintf("ep%d", i), Path: "/v1/test"}
 	}
-
-	client := api.NewClient(srv.URL, "tok")
-	client.MaxRetries = 0
-	client.RetryDelay = 0
-
-	dir := t.TempDir()
-	w, err := storage.NewWriter(dir, time.Now())
+	w, err := storage.NewWriter(t.TempDir(), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	RunFetchers(context.Background(), client, w, endpoints)
+	RunFetchers(context.Background(), newRunnerClient(srv), w, endpoints, Options{})
 
 	if peak > workerCount {
 		t.Errorf("peak concurrency %d exceeded workerCount %d", peak, workerCount)
@@ -152,78 +175,43 @@ func TestRunFetchersMaxConcurrency(t *testing.T) {
 	}
 }
 
-func newRunnerClient(srv *httptest.Server) *api.Client {
-	c := api.NewClient(srv.URL, "api:test")
-	c.MaxRetries = 0
-	return c
-}
-
-// Live run: translations answered 404 for an organization without that
-// feature. An optional endpoint is then "unavailable", not a failure — but a
-// regular endpoint with the same answer still fails.
-func TestRunner_OptionalEndpointNotFoundIsUnavailable(t *testing.T) {
+// Admin-only data refused for this key is "unavailable", not a failure — but
+// a regular endpoint with the same answer still fails, naming the scope.
+func TestRunner_OptionalEndpointRefusedIsUnavailable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"code":"FORBIDDEN_SCOPE"}`))
 	}))
 	defer srv.Close()
 	w, _ := storage.NewWriter(t.TempDir(), time.Now())
 	res := RunFetchers(context.Background(), newRunnerClient(srv), w, []api.Endpoint{
-		{Name: "translations", Path: "/api/organizations/o/translations", Paginated: true, Optional: "feature off"},
-		{Name: "circles", Path: "/api/organizations/o/circles", Paginated: true},
-	})
+		{Name: "audit-logs", Path: "/v1/audit-logs", Scope: "audit_log:read", Optional: "admin only"},
+		{Name: "circles", Path: "/v1/circles", Scope: "circles:read"},
+	}, Options{})
 	if res[0].Unavailable == nil || res[0].Err != nil {
-		t.Errorf("optional 404: %+v", res[0])
+		t.Errorf("optional 403: %+v", res[0])
 	}
-	if res[1].Err == nil || res[1].Unavailable != nil {
-		t.Errorf("regular 404 must fail: %+v", res[1])
+	if res[1].Err == nil || !strings.Contains(res[1].Err.Error(), "circles:read") {
+		t.Errorf("regular 403 must fail and name the scope: %+v", res[1])
 	}
 }
 
-// Live run: chartviews answered 400 to the paging parameters. Retry as a
-// plain request.
-func TestRunner_PagingRejectedFallsBackToPlainRequest(t *testing.T) {
+// The traversal cap keeps the items read and marks the endpoint incomplete.
+func TestRunner_TraversalCapMarksIncomplete(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("page") != "" {
+		if r.URL.Query().Get("cursor") != "" {
 			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"code":"INVALID_CURSOR"}`))
 			return
 		}
-		w.Write([]byte(`{"data":[{"id":"v1"}]}`))
+		json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"id": "a"}},
+			"pagination": map[string]any{"next_cursor": "c", "has_more": true}})
 	}))
 	defer srv.Close()
 	w, _ := storage.NewWriter(t.TempDir(), time.Now())
 	res := RunFetchers(context.Background(), newRunnerClient(srv), w,
-		[]api.Endpoint{{Name: "chartviews", Path: "/api/organizations/o/chartviews", Paginated: true}})[0]
-	if res.Err != nil || len(res.Files) != 1 {
-		t.Fatalf("fallback failed: %+v", res)
-	}
-	data, _ := os.ReadFile(filepath.Join(w.Dir(), "chartviews.json"))
-	if !strings.Contains(string(data), `"v1"`) {
-		t.Errorf("chartviews.json = %s", data)
-	}
-}
-
-// Live run: tensions stopped at exactly 10,000 with totalItems capped too.
-// Hitting the cap must never pass as complete.
-func TestRunner_ResultCapMarksIncomplete(t *testing.T) {
-	old := api.ResultCap
-	api.ResultCap = 3
-	defer func() { api.ResultCap = old }()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Ignores any date filter, always the capped first three items.
-		w.Write([]byte(`{"data":[{"id":"a"},{"id":"b"},{"id":"c"}],"pagination":{"totalItems":3,"pagesCount":1}}`))
-	}))
-	defer srv.Close()
-	w, _ := storage.NewWriter(t.TempDir(), time.Now())
-	res := RunFetchers(context.Background(), newRunnerClient(srv), w, []api.Endpoint{
-		{Name: "meetings", Path: "/api/organizations/o/meetings", Paginated: true},
-		{Name: "tensions", Path: "/api/organizations/o/tensions", Paginated: true, ByCreated: true},
-	})
-	if res[0].Incomplete == nil || !strings.Contains(res[0].Incomplete.Error(), "API limit") {
-		t.Errorf("plain endpoint at the cap: %+v", res[0])
-	}
-	// ByCreated, but the date filter does not work here: falls back, and says so.
-	if res[1].Err != nil || res[1].Incomplete == nil || !strings.Contains(res[1].Incomplete.Error(), "time-window paging not possible") {
-		t.Errorf("tensions without a working date filter: %+v", res[1])
+		[]api.Endpoint{{Name: "tensions", Path: "/v1/tensions"}}, Options{})[0]
+	if res.Err != nil || res.Incomplete == nil || res.Records != 1 {
+		t.Fatalf("%+v", res)
 	}
 }

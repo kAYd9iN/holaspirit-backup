@@ -8,7 +8,7 @@ import (
 	"github.com/danieljoos/wincred"
 )
 
-const CredentialName = "holaspirit-backup"
+const CredentialName = "talkspirit-backup"
 
 // WinCredManager reads the API token from Windows Credential Manager.
 type WinCredManager struct {

@@ -27,14 +27,15 @@
 
 ## Secrets Management: Windows Credential Manager
 
-Der API-Token wird **nie** in einer Datei, Umgebungsvariable oder Konfigurationsdatei gespeichert.  
-Er wird einmalig im Windows Credential Manager hinterlegt und dort durch DPAPI (Data Protection API)  
-an den Windows-Benutzer gebunden geschützt.
+Der API-Schlüssel (`ts_partner_…`) wird **nie** in einer Datei oder Konfigurationsdatei gespeichert.
+Für den Dauerbetrieb wird er einmalig im Windows Credential Manager hinterlegt und dort durch DPAPI
+(Data Protection API) an den Windows-Benutzer gebunden geschützt. Für einmalige Läufe kann er als
+Umgebungsvariable `TALKSPIRIT_API_KEY` der aktuellen Sitzung gesetzt werden (hat Vorrang).
 
 ### Einmalige Einrichtung (PowerShell als Admin)
 
 ```powershell
-cmdkey /generic:holaspirit-backup /user:api /pass:api:DEIN_TOKEN_HIER
+cmdkey /generic:talkspirit-backup /user:api /pass:ts_partner_DEIN_SCHLUESSEL
 ```
 
 ### Vergleich: .env-Datei vs. Windows Credential Manager
@@ -49,7 +50,7 @@ cmdkey /generic:holaspirit-backup /user:api /pass:api:DEIN_TOKEN_HIER
 
 ### Linux-Betrieb
 
-Auf Linux wird `HOLASPIRIT_TOKEN` als Umgebungsvariable erwartet.  
+Auf Linux wird `TALKSPIRIT_API_KEY` als Umgebungsvariable erwartet.  
 Der Wert wird automatisch von führenden/abschließenden Leerzeichen bereinigt (TrimSpace),  
 sodass Tokens aus Dateien mit Zeilenumbruch (`TOKEN\n`) korrekt funktionieren.
 
@@ -154,7 +155,7 @@ Warnung ausgewiesen: ECDSA P-256 ist NIST-konform, aber nicht quantensicher
 
 ## Netzwerk
 
-- Ausgehende HTTPS-Verbindung zu `app.holaspirit.com` (Port 443)
+- Ausgehende HTTPS-Verbindung zu `partner-api.talkspirit.com` (Port 443)
 - Keine eingehenden Verbindungen nötig
 - HTTP-Timeouts: 30s pro API-Request, 2h gesamt (konfigurierbar via `--timeout`)
 
