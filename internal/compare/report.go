@@ -1,6 +1,7 @@
 package compare
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -52,8 +53,7 @@ func (r *Report) WriteFiles(dir string) (string, error) {
 		return "", err
 	}
 	if err := r.WriteXLSX(f); err != nil {
-		f.Close()
-		return "", err
+		return "", errors.Join(err, f.Close())
 	}
 	return path, f.Close()
 }
