@@ -100,7 +100,10 @@ func refused(err error) (*api.StatusError, bool) {
 func fetch(ctx context.Context, client *api.Client, w *storage.Writer, ep api.Endpoint, opt Options) Result {
 	res := fetchEndpoint(ctx, client, w, ep, opt)
 	if res.Err != nil && ep.Optional != "" {
-		if se, ok := refused(res.Err); ok && se.Code != 400 {
+		var se *api.StatusError
+		// 409: the feature is switched off for the organization
+		// (audit log: ACTIVITY_LOG_DISABLED).
+		if errors.As(res.Err, &se) && (se.Code == 401 || se.Code == 403 || se.Code == 404 || se.Code == 409) {
 			return Result{Name: ep.Name, Unavailable: fmt.Errorf("%s (%s)", ep.Optional, se.Error())}
 		}
 	}

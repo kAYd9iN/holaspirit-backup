@@ -20,6 +20,7 @@ const (
 	areaSections   = "Spalten"
 	areaLabels     = "Labels"
 	areaTasks      = "Aufgaben"
+	areaOpen       = "Offene Spannungen"
 	areaMeetings   = "Meetings"
 	areaTensions   = "Traktanden & Notizen"
 )
@@ -34,13 +35,13 @@ const (
 
 // areaOrder is the report order; areaPrio its priority level.
 var areaOrder = []string{areaUsers, areaCircles, areaRoles, areaAssign, areaPolicies,
-	areaCustom, areaGoals, areaTimeframes, areaProjects, areaSections, areaLabels, areaTasks,
+	areaCustom, areaGoals, areaTimeframes, areaOpen, areaProjects, areaSections, areaLabels, areaTasks,
 	areaMeetings, areaTensions}
 
 var areaPrio = map[string]string{
 	areaUsers: PrioHigh, areaCircles: PrioHigh, areaRoles: PrioHigh, areaAssign: PrioHigh, areaPolicies: PrioHigh,
 	areaCustom: PrioMedium, areaGoals: PrioMedium, areaTimeframes: PrioMedium, areaProjects: PrioMedium,
-	areaSections: PrioMedium, areaLabels: PrioMedium, areaTasks: PrioMedium,
+	areaSections: PrioMedium, areaLabels: PrioMedium, areaTasks: PrioMedium, areaOpen: PrioMedium,
 	areaMeetings: PrioLow, areaTensions: PrioLow,
 }
 
@@ -105,36 +106,33 @@ func Run(hsDir, tsDir string, migratedAt time.Time) (*Report, error) {
 	return r, nil
 }
 
-// guessMigration estimates the end of the migration: most Talkspirit circles,
-// roles and users are created by the import, so the busiest creation day
-// marks it; the last creation that day is taken as its end.
+// guessMigration estimates the end of the migration. Talkspirit keeps the
+// Holaspirit timestamps on migrated objects, but writes every migrated
+// membership with the import time: a single updated_at shared by (nearly) all
+// memberships is that time.
 func guessMigration(ts *tsSet) (time.Time, string, error) {
-	perDay := map[string][]time.Time{}
-	total := 0
-	for _, list := range [][]obj{ts.circles, ts.roles, ts.users} {
-		for _, o := range list {
-			if t := tm(o, "created_at"); !t.IsZero() {
-				perDay[dayKey(t)] = append(perDay[dayKey(t)], t)
-				total++
+	perMinute := map[string]time.Time{}
+	counts := map[string]int{}
+	for _, m := range ts.memberships {
+		if t := tm(m, "updated_at"); !t.IsZero() {
+			k := minuteKey(t)
+			counts[k]++
+			if t.After(perMinute[k]) {
+				perMinute[k] = t
 			}
 		}
 	}
 	best := ""
-	for d, l := range perDay {
-		if best == "" || len(l) > len(perDay[best]) || (len(l) == len(perDay[best]) && d < best) {
-			best = d
+	for k, n := range counts {
+		if best == "" || n > counts[best] {
+			best = k
 		}
 	}
-	if total == 0 || len(perDay[best])*2 < total {
-		return time.Time{}, "", fmt.Errorf("cannot estimate the migration time from the Talkspirit data (no single import day) — pass --migrated-at YYYY-MM-DD[THH:MM]")
+	if best == "" || counts[best]*10 < len(ts.memberships)*9 {
+		return time.Time{}, "", fmt.Errorf("cannot estimate the migration time from the Talkspirit data — pass --migrated-at YYYY-MM-DD[THH:MM]")
 	}
-	var last time.Time
-	for _, t := range perDay[best] {
-		if t.After(last) {
-			last = t
-		}
-	}
-	return last.Add(time.Minute), fmt.Sprintf("%d von %d Kreisen/Rollen/Personen wurden am %s angelegt", len(perDay[best]), total, best), nil
+	return perMinute[best].Add(time.Minute).Truncate(time.Minute),
+		fmt.Sprintf("%d von %d Mitgliedschaften tragen den Import-Zeitpunkt %s UTC", counts[best], len(ts.memberships), perMinute[best].Format("02.01.2006 15:04")), nil
 }
 
 type cmp struct {
@@ -149,6 +147,9 @@ type cmp struct {
 	rolePair             map[string]string // HS role id → TS role id
 	meetingPair          map[string]string
 	boardPair            map[string]string
+	tsMembershipsOf      map[string][]obj // TS role id → memberships
+	tsRoleless           map[string]bool  // e-mails of active TS users without any role
+	tsActive             map[string]bool  // e-mails of active TS users
 }
 
 func email(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
@@ -192,9 +193,9 @@ func (c *cmp) users() {
 		}
 	}
 	for _, h := range hsLeft {
-		c.r.add(Finding{Area: areaUsers, Kind: Missing, Key: personKey(h.o), What: "Person fehlt",
+		c.r.add(Finding{Area: areaUsers, Kind: Unverified, Key: personKey(h.o), What: "kein aktives Konto",
 			Original: personKey(h.o), HSID: h.id,
-			Detail: "kein aktives Talkspirit-Konto mit dieser E-Mail (gesperrte/anonymisierte Konten liefert die API nicht)"})
+			Detail: "kein aktives Talkspirit-Konto mit dieser E-Mail – gesperrt oder nicht migriert (gesperrte/anonymisierte Konten liefert die API nie)"})
 	}
 	for _, t := range tsLeft {
 		key := fmt.Sprintf("%s <%s>", str(t.o, "display_name"), str(t.o, "email"))
@@ -393,6 +394,7 @@ func (c *cmp) circles() {
 func (c *cmp) roles() {
 	a := c.r.area(areaRoles)
 	c.rolePair = map[string]string{}
+	c.indexMemberships()
 	tsCircleKeys := map[string]bool{}
 	for id := range c.ts.circleByID {
 		tsCircleKeys[normPath(c.tsCirclePath[id])] = true
@@ -444,6 +446,56 @@ func (c *cmp) roles() {
 	}
 }
 
+// indexMemberships groups the Talkspirit memberships by role and reports
+// people who held roles in Holaspirit but hold none at all in Talkspirit —
+// a migration loss per person rather than per role.
+func (c *cmp) indexMemberships() {
+	c.tsMembershipsOf = map[string][]obj{}
+	c.tsRoleless = map[string]bool{}
+	hasRole := map[string]bool{}
+	for _, m := range c.ts.memberships {
+		if id := str(m, "role_id"); id != "" {
+			c.tsMembershipsOf[id] = append(c.tsMembershipsOf[id], m)
+		}
+		hasRole[c.emailOfTS[str(m, "user_id")]] = true
+	}
+	for _, r := range c.ts.roles {
+		for _, m := range objs(r, "members") {
+			hasRole[c.emailOfTS[str(m, "user_id")]] = true
+		}
+	}
+	tsActive := map[string]bool{}
+	for _, e := range c.emailOfTS {
+		tsActive[e] = true
+	}
+	c.tsActive = tsActive
+	held := map[string][]string{}
+	for _, r := range c.hs.roles {
+		for _, e := range c.holders(r) {
+			held[e] = append(held[e], c.hsCirclePath[str(r, "parentCircle")]+" › "+str(r, "name"))
+		}
+	}
+	var people []string
+	for e := range held {
+		if tsActive[e] && !hasRole[e] {
+			people = append(people, e)
+		}
+	}
+	sort.Strings(people)
+	for _, e := range people {
+		c.tsRoleless[e] = true
+		roles := held[e]
+		sort.Strings(roles)
+		what := fmt.Sprintf("Alle %d Rollen fehlen", len(roles))
+		if len(roles) == 1 {
+			what = "Die einzige Rolle fehlt"
+		}
+		c.r.add(Finding{Area: areaUsers, Kind: MissingPart, Key: c.person(e), What: what,
+			Original: strings.Join(roles, "\n"), Current: "aktives Konto, aber keine einzige Rolle oder Mitgliedschaft",
+			Detail: "Systematischer Verlust pro Person: die Rollenzuweisungen dieser Person wurden nicht migriert"})
+	}
+}
+
 // assignments compares who holds a matched role.
 func (c *cmp) assignments(base Finding, hsRole, tsRole obj) {
 	a := c.r.area(areaAssign)
@@ -451,13 +503,25 @@ func (c *cmp) assignments(base Finding, hsRole, tsRole obj) {
 	hsEmails := c.holders(hsRole)
 	tsEmails := map[string]obj{}
 	var current []string
-	for _, m := range objs(tsRole, "members") {
+	// Role members (?include=members) and the tenant-wide memberships list
+	// describe the same assignments; take both.
+	members := append(objs(tsRole, "members"), c.tsMembershipsOf[str(tsRole, "id")]...)
+	for _, m := range members {
+		// An ended mandate (expired election) counts on neither side.
+		if exp := tm(m, "expires_at"); !exp.IsZero() && !c.hs.time.IsZero() && exp.Before(c.hs.time) {
+			continue
+		}
 		if e := c.emailOfTS[str(m, "user_id")]; e != "" {
+			if _, dup := tsEmails[e]; !dup {
+				current = append(current, c.person(e))
+			}
 			tsEmails[e] = m
-			current = append(current, c.person(e))
 		}
 	}
 	sort.Strings(current)
+	if len(current) > 8 {
+		current = append(current[:8], fmt.Sprintf("… und %d weitere", len(current)-8))
+	}
 	a.HS += len(hsEmails)
 	a.TS += len(tsEmails)
 	seen := map[string]bool{}
@@ -469,7 +533,11 @@ func (c *cmp) assignments(base Finding, hsRole, tsRole obj) {
 		}
 		g := base
 		g.Kind, g.What, g.Original, g.Current = MissingPart, "Person fehlt in der Rolle", c.person(e), strings.Join(current, "\n")
-		if tm(tsRole, "updated_at").After(c.r.MigratedAt) {
+		if !c.tsActive[e] {
+			g.Kind, g.Detail = Unverified, "Person hat kein aktives Talkspirit-Konto (siehe Personen)"
+		} else if c.tsRoleless[e] {
+			g.Detail = "Diese Person hat in Talkspirit keine einzige Rolle mehr (siehe Personen)"
+		} else if tm(tsRole, "updated_at").After(c.r.MigratedAt) {
 			g.Detail = "Rolle wurde nach dem Stichtag geändert"
 		}
 		c.r.add(g)
@@ -510,7 +578,9 @@ func (c *cmp) policies() {
 		if !sameText(str(p.hs.o, "body"), str(content[0], "content")) {
 			c.r.add(Finding{Area: areaPolicies, Kind: c.r.classify(time.Time{}, tm(p.ts.o, "updated_at")),
 				Circle: c.hsCirclePath[str(p.hs.o, "circle")], Key: str(p.hs.o, "title"), What: "Text weicht ab",
-				Original: plain(str(p.hs.o, "body")), Current: plain(str(content[0], "content")), HSID: p.hs.id, TSID: p.ts.id})
+				Original: plain(str(p.hs.o, "body")), Current: plain(str(content[0], "content")), HSID: p.hs.id, TSID: p.ts.id,
+				Detail: fmt.Sprintf("Talkspirit zeigt die veröffentlichte Version %s vom %s", str(content[0], "version_number"),
+					tm(content[0], "published_at").Format("02.01.2006"))})
 		}
 	}
 	for _, h := range hsLeft {
@@ -522,74 +592,120 @@ func (c *cmp) policies() {
 
 func (c *cmp) customFields() {
 	a := c.r.area(areaCustom)
-	tsDefs := map[string][]obj{"role": c.ts.cfRole, "circle": c.ts.cfCircle, "member": c.ts.cfUser, "user": c.ts.cfUser}
-	a.HS = len(c.hs.customFields)
-	a.TS = len(c.ts.cfRole) + len(c.ts.cfCircle) + len(c.ts.cfUser)
-	for _, f := range c.hs.customFields {
-		applyTo := str(f, "applyTo")
-		found := false
-		for _, d := range tsDefs[applyTo] {
-			if norm(str(d, "name")) == norm(str(f, "name")) {
-				found = true
-				break
-			}
+	tsDefs := map[string]string{} // normalized name → Talkspirit entity type
+	for typ, list := range map[string][]obj{"Kreis": c.ts.cfCircle, "Rolle": c.ts.cfRole, "Person": c.ts.cfUser} {
+		for _, d := range list {
+			tsDefs[norm(str(d, "name"))] = typ
 		}
-		if found {
+	}
+	a.TS = len(tsDefs)
+	for _, f := range c.hs.customFields {
+		if _, ok := tsDefs[norm(str(f, "name"))]; ok {
+			a.HS++
 			a.Matched++
 			continue
 		}
-		c.r.add(Finding{Area: areaCustom, Kind: Missing, Key: fmt.Sprintf("%s (%s)", str(f, "name"), applyTo), What: "Felddefinition fehlt",
-			Original: str(f, "description"), HSID: str(f, "id")})
+		a.HS++
+		c.r.add(Finding{Area: areaCustom, Kind: Missing, Key: str(f, "name"), What: "Felddefinition fehlt",
+			Original: fmt.Sprintf("%s (%s)", str(f, "name"), str(f, "applyTo")), HSID: str(f, "id")})
 	}
 
-	// Values on roles: Holaspirit keys them by apiName, Talkspirit by name.
-	nameOf := map[string]string{}
-	for _, f := range c.hs.customFields {
-		nameOf[str(f, "apiName")] = str(f, "name")
-		nameOf[str(f, "id")] = str(f, "name")
-	}
-	tsRoles := map[string]obj{}
-	for _, r := range c.ts.roles {
-		tsRoles[str(r, "id")] = r
-	}
+	// Values. Holaspirit keys them by apiName as {apiName, name, value};
+	// Talkspirit lists {key, name, value | values}. A circle's field lives on
+	// the circle's own role in Holaspirit and on the circle in Talkspirit.
+	tsRoles, tsUsers := byID(c.ts.roles), byID(c.ts.users)
 	for _, hr := range c.hs.rolesCF {
-		tr, ok := tsRoles[c.rolePair[str(hr, "id")]]
-		if !ok {
+		var target obj
+		var key, circle string
+		if circleID := str(hr, "circle"); circleID != "" {
+			target = c.ts.circleByID[c.circlePair[circleID]]
+			key, circle = str(hr, "name"), parentPath(c.hsCirclePath[circleID])
+		} else {
+			target = tsRoles[c.rolePair[str(hr, "id")]]
+			key, circle = str(hr, "name"), c.hsCirclePath[str(hr, "parentCircle")]
+		}
+		if target != nil {
+			c.fieldValues(hr, target, key, circle, tm(hr, "updatedAt"))
+		}
+	}
+	for _, m := range c.hs.members {
+		var tu obj
+		for id, e := range c.emailOfTS {
+			if e == email(str(m, "email")) {
+				tu = tsUsers[id]
+			}
+		}
+		if tu != nil {
+			c.fieldValues(m, tu, personKey(m), "", tm(m, "updatedAt"))
+		}
+	}
+}
+
+// fieldValue renders a custom-field value of either side as text.
+func fieldValue(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return plain(x)
+	case []any:
+		var parts []string
+		for _, e := range x {
+			if s := fieldValue(e); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		sort.Strings(parts)
+		return strings.Join(parts, ", ")
+	case map[string]any:
+		if val, ok := x["value"]; ok {
+			return fieldValue(val)
+		}
+		for _, k := range []string{"label", "name", "title"} {
+			if s, ok := x[k].(string); ok {
+				return s
+			}
+		}
+	}
+	return fmt.Sprint(v)
+}
+
+// fieldValues compares the filled custom fields of a Holaspirit object with
+// its Talkspirit counterpart.
+func (c *cmp) fieldValues(hs, ts obj, key, circle string, hsUpd time.Time) {
+	a := c.r.area(areaCustom)
+	vals, _ := hs["customFields"].(map[string]any)
+	for apiName, raw := range vals {
+		hv := fieldValue(raw)
+		if norm(hv) == "" {
 			continue
 		}
-		vals, _ := hr["customFields"].(map[string]any)
-		for k, v := range vals {
-			hv := fmt.Sprint(v)
-			if s, ok := v.(string); ok {
-				hv = s
+		name := apiName
+		if m, ok := raw.(map[string]any); ok {
+			if n, ok := m["name"].(string); ok && n != "" {
+				name = n
 			}
-			if norm(hv) == "" || hv == "<nil>" {
-				continue
-			}
-			name := nameOf[k]
-			if name == "" {
-				name = k
-			}
-			tv := ""
-			for _, f := range objs(tr, "custom_fields") {
-				if norm(str(f, "name")) == norm(name) || str(f, "key") == k {
-					tv = str(f, "value")
-					if tv == "" {
-						tv = strings.Join(strs(f, "values"), ", ")
-					}
+		}
+		tv := ""
+		for _, f := range objs(ts, "custom_fields") {
+			if norm(str(f, "name")) == norm(name) || str(f, "key") == apiName || str(f, "key") == "custom_"+apiName {
+				tv = fieldValue(f["value"])
+				if tv == "" {
+					tv = fieldValue(f["values"])
 				}
 			}
-			if sameText(hv, tv) {
-				continue
-			}
-			kind := MissingPart
-			if norm(tv) != "" || tm(tr, "updated_at").After(c.r.MigratedAt) {
-				kind = c.r.classify(tm(hr, "updatedAt"), tm(tr, "updated_at"))
-			}
-			c.r.add(Finding{Area: areaCustom, Kind: kind, Circle: c.hsCirclePath[str(hr, "parentCircle")], Key: str(hr, "name"),
-				What: fmt.Sprintf("Feld „%s“ abweichend", name), Original: plain(hv), Current: plain(tv),
-				HSID: str(hr, "id"), TSID: str(tr, "id")})
 		}
+		a.HS++
+		if sameText(hv, tv) {
+			a.Matched++
+			continue
+		}
+		kind := MissingPart
+		if norm(tv) != "" {
+			kind = c.r.classify(hsUpd, tm(ts, "updated_at"))
+		}
+		c.r.add(Finding{Area: areaCustom, Kind: kind, Circle: circle, Key: key, What: fmt.Sprintf("Feld „%s“ %s", name, yesNo(norm(tv) == "", "leer", "abweichend")),
+			Original: hv, Current: tv, HSID: str(hs, "id"), TSID: str(ts, "id")})
 	}
 }
 
@@ -641,23 +757,23 @@ func (c *cmp) goals() {
 		c.r.add(Finding{Area: areaGoals, Kind: c.r.extra(tm(t.o, "created_at")), Key: str(t.o, "title"), What: "Ziel nur in Talkspirit", TSID: t.id})
 	}
 
-	// timeframes ↔ time periods
+	// Timeframes: Holaspirit has recurring cadences ("Monatlich"), Talkspirit
+	// concrete periods ("2026-05"), so the lists cannot be compared; what
+	// must survive is that every goal keeps a period.
 	b := c.r.area(areaTimeframes)
-	b.HS, b.TS = len(c.hs.timeframes), len(c.ts.timePeriods)
-	hs, ts = nil, nil
-	for _, o := range c.hs.timeframes {
-		hs = append(hs, &rec{o: o, id: str(o, "id"), keys: []string{norm(str(o, "name"))}})
-	}
-	for _, o := range c.ts.timePeriods {
-		ts = append(ts, &rec{o: o, id: str(o, "id"), keys: []string{norm(str(o, "title"))}})
-	}
-	pairs, hsLeft, tsLeft = match(hs, ts, 1)
-	b.Matched = len(pairs)
-	for _, h := range hsLeft {
-		c.r.add(Finding{Area: areaTimeframes, Kind: Missing, Key: str(h.o, "name"), What: "Zeitraum fehlt", HSID: h.id})
-	}
-	for _, t := range tsLeft {
-		c.r.add(Finding{Area: areaTimeframes, Kind: c.r.extra(tm(t.o, "created_at")), Key: str(t.o, "title"), What: "Zeitraum nur in Talkspirit", TSID: t.id})
+	b.Note = "Holaspirit: wiederkehrende Rhythmen, Talkspirit: konkrete Perioden – geprüft wird, ob jedes Ziel einen Zeitraum behalten hat"
+	for _, p := range pairs {
+		if str(p.hs.o, "timeframe") == "" {
+			continue
+		}
+		b.HS++
+		if len(strs(p.ts.o, "time_period_ids")) > 0 {
+			b.TS++
+			b.Matched++
+			continue
+		}
+		c.r.add(Finding{Area: areaTimeframes, Kind: MissingPart, Circle: c.hsCirclePath[str(p.hs.o, "circle")], Key: str(p.hs.o, "title"),
+			What: "Zeitraum am Ziel fehlt", Original: c.hs.timeframeName[str(p.hs.o, "timeframe")], HSID: p.hs.id, TSID: p.ts.id})
 	}
 }
 
@@ -667,14 +783,30 @@ func (c *cmp) projects() {
 	a := c.r.area(areaProjects)
 	a.HS, a.TS = len(c.hs.boards), len(c.ts.projects)
 	c.boardPair = map[string]string{}
+	// Several boards share a name (copies of templates); their archive state
+	// and column set tell them apart.
+	hsCols := map[string][]string{}
+	for _, col := range c.hs.columns {
+		hsCols[str(col, "board")] = append(hsCols[str(col, "board")], norm(str(col, "name")))
+	}
+	sig := func(names []string) string {
+		sort.Strings(names)
+		return strings.Join(names, "|")
+	}
 	var hs, ts []*rec
 	for _, o := range c.hs.boards {
-		hs = append(hs, &rec{o: o, id: str(o, "id"), keys: []string{norm(str(o, "title"))}})
+		n, arch := norm(str(o, "title")), yesNo(str(o, "archivedAt") != "", "a", "o")
+		hs = append(hs, &rec{o: o, id: str(o, "id"), keys: []string{n + "|" + arch + "|" + sig(hsCols[str(o, "id")]), n + "|" + arch, n}})
 	}
 	for _, o := range c.ts.projects {
-		ts = append(ts, &rec{o: o, id: str(o, "id"), keys: []string{norm(str(o, "name"))}})
+		var cols []string
+		for _, s := range c.ts.sections[str(o, "id")] {
+			cols = append(cols, norm(str(s, "name")))
+		}
+		n, arch := norm(str(o, "name")), yesNo(boolean(o, "archived"), "a", "o")
+		ts = append(ts, &rec{o: o, id: str(o, "id"), keys: []string{n + "|" + arch + "|" + sig(cols), n + "|" + arch, n}})
 	}
-	pairs, hsLeft, tsLeft := match(hs, ts, 1)
+	pairs, hsLeft, tsLeft := match(hs, ts, 3)
 	a.Matched = len(pairs)
 	for _, p := range pairs {
 		c.boardPair[p.hs.id] = p.ts.id
@@ -745,6 +877,17 @@ func (c *cmp) tasks() {
 	if !c.ts.have["subtasks"] {
 		a.Note = "Unteraufgaben fehlen im Talkspirit-Backup"
 	}
+	// Holaspirit marks a task done by its status or by checking it off.
+	hsDone := func(o obj) bool {
+		return str(o, "status") == "done" || boolean(o, "checked") || str(o, "completedAt") != ""
+	}
+	tsDone := func(o obj) bool {
+		st := strings.ToLower(str(o, "status"))
+		return str(o, "completed_at") != "" || st == "done" || st == "completed" || st == "closed"
+	}
+	state := func(done, archived bool) string { return yesNo(done, "d", "o") + yesNo(archived, "a", "-") }
+	// Passes: 0 title+minute+state (duplicates created at the same moment),
+	// 1 title+minute, 2 title+day, 3 project+title, 4 title only.
 	var hs, ts []*rec
 	for _, o := range c.hs.tasks {
 		title, t := norm(str(o, "title")), tm(o, "createdAt")
@@ -752,13 +895,15 @@ func (c *cmp) tasks() {
 		if p := c.boardPair[str(o, "board")]; p != "" {
 			pk = key2(p, title)
 		}
-		hs = append(hs, &rec{o: o, id: str(o, "id"), keys: []string{key2(title, minuteKey(t)), key2(title, dayKey(t)), pk, title}})
+		st := state(hsDone(o), str(o, "archivedAt") != "")
+		hs = append(hs, &rec{o: o, id: str(o, "id"), keys: []string{key2(key2(title, minuteKey(t)), st), key2(title, minuteKey(t)), key2(title, dayKey(t)), pk, title}})
 	}
 	for _, o := range c.ts.tasks {
 		title, t := norm(str(o, "title")), tm(o, "created_at")
-		ts = append(ts, &rec{o: o, id: str(o, "id"), keys: []string{key2(title, minuteKey(t)), key2(title, dayKey(t)), key2(str(o, "project_id"), title), title}})
+		st := state(tsDone(o), boolean(o, "archived"))
+		ts = append(ts, &rec{o: o, id: str(o, "id"), keys: []string{key2(key2(title, minuteKey(t)), st), key2(title, minuteKey(t)), key2(title, dayKey(t)), key2(str(o, "project_id"), title), title}})
 	}
-	pairs, hsLeft, tsLeft := match(hs, ts, 4)
+	pairs, hsLeft, tsLeft := match(hs, ts, 5)
 	a.Matched = len(pairs)
 	boards := byID(c.hs.boards)
 	board := func(o obj) string {
@@ -767,37 +912,69 @@ func (c *cmp) tasks() {
 		}
 		return str(boards[str(o, "board")], "title")
 	}
+	taskPair := map[string]string{}
+	hsTasks := byID(c.hs.tasks)
 	for _, p := range pairs {
+		taskPair[p.hs.id] = p.ts.id
 		base := Finding{Area: areaTasks, Circle: board(p.hs.o), Key: taskKey(p.hs.o), HSID: p.hs.id, TSID: p.ts.id}
-		if p.pass == 3 {
+		if p.pass == 4 {
 			g := base
 			g.Kind, g.What, g.Detail = Uncertain, "nur über den Titel zugeordnet", "Talkspirit-Aufgabe vom "+str(p.ts.o, "created_at")
 			c.r.add(g)
 		}
 		kind := c.r.classify(tm(p.hs.o, "updatedAt"), tm(p.ts.o, "updated_at"))
-		if hsArch, tsArch := str(p.hs.o, "archivedAt") != "", boolean(p.ts.o, "archived"); hsArch != tsArch {
+		// Talkspirit archives the sub-tasks of an archived task and archived
+		// some done tasks on import; neither loses anything.
+		hsArch, tsArch := str(p.hs.o, "archivedAt") != "", boolean(p.ts.o, "archived")
+		parentArchived := str(hsTasks[str(p.hs.o, "parent")], "archivedAt") != ""
+		if hsArch != tsArch && !(tsArch && (hsDone(p.hs.o) || parentArchived)) {
 			g := base
 			g.Kind, g.What, g.Original, g.Current = kind, "Archiv-Status abweichend", yesNo(hsArch, "archiviert", "aktiv"), yesNo(tsArch, "archiviert", "aktiv")
 			c.r.add(g)
 		}
-		hsDone := str(p.hs.o, "status") == "done"
-		st := strings.ToLower(str(p.ts.o, "status"))
-		tsDone := str(p.ts.o, "completed_at") != "" || st == "done" || st == "completed" || st == "closed"
-		if hsDone != tsDone {
+		if hd, td := hsDone(p.hs.o), tsDone(p.ts.o); hd != td {
 			g := base
-			g.Kind, g.What, g.Original, g.Current = kind, "Erledigt-Status abweichend", yesNo(hsDone, "erledigt", "offen"), yesNo(tsDone, "erledigt", "offen")+" ("+str(p.ts.o, "status")+")"
+			g.Kind, g.What, g.Original, g.Current = kind, "Erledigt-Status abweichend", yesNo(hd, "erledigt", "offen"), yesNo(td, "erledigt", "offen")+" ("+str(p.ts.o, "status")+")"
 			c.r.add(g)
 		}
 	}
+	// unverifiable reports why a task absent from the Talkspirit backup may
+	// still exist in Talkspirit, or "" when its absence is proven.
+	var unverifiable func(o obj, depth int) string
+	unverifiable = func(o obj, depth int) string {
+		parent := str(o, "parent")
+		if parent == "" {
+			if str(o, "board") == "" {
+				return "Aufgabe ohne Projekt: die API zeigt sie nur, wenn der technische Benutzer an ihr beteiligt ist"
+			}
+			return ""
+		}
+		if tp, ok := taskPair[parent]; ok {
+			if !c.ts.subtaskParents[tp] {
+				return "Unteraufgabe: ihre Unteraufgaben wurden im Backup nicht abgefragt (v0.6.0 fragte nur bei subtask_count > 0, und dieser Zähler übergeht archivierte Unteraufgaben) – mit v0.6.1 erneut sichern"
+			}
+			return ""
+		}
+		if p, ok := hsTasks[parent]; ok && depth < 10 {
+			if why := unverifiable(p, depth+1); why != "" {
+				return "übergeordnete Aufgabe nicht bestätigbar: " + why
+			}
+		}
+		return ""
+	}
 	for _, h := range hsLeft {
-		detail := fmt.Sprintf("Status %s%s", str(h.o, "status"), yesNo(str(h.o, "archivedAt") != "", ", archiviert", ""))
+		detail := fmt.Sprintf("Status %s%s", yesNo(hsDone(h.o), "erledigt", "offen"), yesNo(str(h.o, "archivedAt") != "", ", archiviert", ""))
 		if boolean(h.o, "private") {
-			detail += ", privat (für den API-Benutzer evtl. unsichtbar)"
+			detail += ", privat"
 		}
 		if str(h.o, "parent") != "" {
 			detail += ", Unteraufgabe"
 		}
-		c.r.add(Finding{Area: areaTasks, Kind: Missing, Circle: board(h.o), Key: taskKey(h.o), What: "Aufgabe fehlt",
+		kind, what := Missing, "Aufgabe fehlt"
+		if why := unverifiable(h.o, 0); why != "" {
+			kind, what, detail = Unverified, "Aufgabe nicht im Backup", why+" ("+detail+")"
+		}
+		c.r.add(Finding{Area: areaTasks, Kind: kind, Circle: board(h.o), Key: taskKey(h.o), What: what,
 			Original: strings.TrimSpace(str(h.o, "title") + "\n" + clip(plain(str(h.o, "body")), 2000)), HSID: h.id, Detail: detail})
 	}
 	for _, t := range tsLeft {
@@ -868,13 +1045,16 @@ func (c *cmp) meetings() {
 	}
 }
 
-// hsMeetingTime is when a Holaspirit meeting took place; meetings without a
-// date ("Evolution outside meeting") fall back to their creation.
+// hsMeetingTime is when a Holaspirit meeting took place. Meetings without a
+// date ("Evolution outside meeting") start, in Talkspirit, at the moment they
+// were opened; failing that, their creation.
 func hsMeetingTime(o obj) time.Time {
-	if t := tm(o, "scheduledAt"); !t.IsZero() {
-		return t
+	for _, k := range []string{"scheduledAt", "openedAt", "createdAt"} {
+		if t := tm(o, k); !t.IsZero() {
+			return t
+		}
 	}
-	return tm(o, "createdAt")
+	return time.Time{}
 }
 
 func (c *cmp) meetingKey(o obj) string {
@@ -934,6 +1114,26 @@ func (c *cmp) tensions() {
 	pairs, hsLeft, tsLeft := match(hs, ts, 6)
 	a.Matched = len(pairs)
 	hsMeetings := byID(c.hs.meetings)
+	// Open tensions (not attached to a meeting) are current work: own area.
+	open := c.r.area(areaOpen)
+	open.Note = "Holaspirit-Spannungen ohne Meeting (Backlog); Talkspirit-Spalte = offene Talkspirit-Spannungen"
+	for _, t := range c.ts.tensions {
+		if st := strings.ToUpper(str(t, "status")); st != "RESOLVED" && st != "CLOSED" {
+			open.TS++
+		}
+	}
+	for _, h := range hs {
+		if str(h.o, "meeting") == "" {
+			open.HS++
+			a.HS--
+		}
+	}
+	for _, p := range pairs {
+		if str(p.hs.o, "meeting") == "" {
+			open.Matched++
+			a.Matched--
+		}
+	}
 	meetingOf := func(o obj) string {
 		if m, ok := hsMeetings[str(o, "meeting")]; ok {
 			return c.meetingKey(m)
@@ -946,7 +1146,96 @@ func (c *cmp) tensions() {
 				What: "nur über den Titel zugeordnet", Detail: meetingOf(p.hs.o), HSID: p.hs.id, TSID: p.ts.id})
 		}
 	}
+	// Holaspirit carries an unresolved item from meeting to meeting and keeps
+	// backlog copies; Talkspirit has it once. A title that exists somewhere
+	// in Talkspirit is therefore not counted as lost.
+	tsTitles := map[string]bool{}
+	var tsWords []map[string]bool
+	var tsNames []string
+	for _, t := range ts {
+		if !tsTitles[t.keys[5]] {
+			tsWords = append(tsWords, words(t.keys[5]))
+			tsNames = append(tsNames, str(t.o, "title"))
+		}
+		tsTitles[t.keys[5]] = true
+	}
+	// Every other Talkspirit text, to find an item that survived only inside
+	// another one (a description, a task, a comment).
+	var corpus strings.Builder
+	for _, t := range c.ts.tensions {
+		corpus.WriteString(strings.ToLower(plain(str(t, "description")) + " " + plain(str(t, "context")) + " " + plain(str(t, "resolution_note")) + "\n"))
+	}
+	for _, list := range c.ts.agenda {
+		for _, a := range list {
+			corpus.WriteString(strings.ToLower(plain(str(a, "description")) + "\n"))
+		}
+	}
+	for _, t := range c.ts.tasks {
+		corpus.WriteString(strings.ToLower(str(t, "title") + " " + plain(str(t, "description")) + "\n"))
+	}
+	text := corpus.String()
+	// similarTitle returns the most similar Talkspirit title (word Jaccard
+	// ≥ 0.6), or "".
+	similarTitle := func(name string) string {
+		w := words(norm(name))
+		best, bestName := 0.0, ""
+		for i, tw := range tsWords {
+			inter := 0
+			for x := range w {
+				if tw[x] {
+					inter++
+				}
+			}
+			if union := len(w) + len(tw) - inter; union > 0 {
+				if s := float64(inter) / float64(union); s > best {
+					best, bestName = s, tsNames[i]
+				}
+			}
+		}
+		if best >= 0.6 {
+			return bestName
+		}
+		return ""
+	}
 	for _, h := range hsLeft {
+		mid := str(h.o, "meeting")
+		if tsTitles[norm(str(h.o, "name"))] {
+			area := areaTensions
+			if mid == "" {
+				area = areaOpen
+			}
+			c.r.add(Finding{Area: area, Kind: Uncertain, Circle: c.hsCirclePath[str(h.o, "circle")], Key: tensionKey(h.o),
+				What: "Titel in Talkspirit vorhanden", Original: str(h.o, "name"), HSID: h.id,
+				Detail: "in Holaspirit mehrfach geführt (Backlog oder über mehrere Meetings), in Talkspirit einmal vorhanden"})
+			continue
+		}
+		if _, ok := hsMeetings[mid]; mid != "" && !ok {
+			c.r.add(Finding{Area: areaTensions, Kind: Orphan, Circle: c.hsCirclePath[str(h.o, "circle")], Key: tensionKey(h.o),
+				What: "Traktandum eines gelöschten Meetings", Original: str(h.o, "name"), HSID: h.id,
+				Detail: "das Meeting fehlt schon im Holaspirit-Backup (in Holaspirit gelöscht)"})
+			continue
+		}
+		sim := similarTitle(str(h.o, "name"))
+		if name := strings.ToLower(strings.TrimSpace(str(h.o, "name"))); sim == "" && len([]rune(name)) >= 12 && strings.Contains(text, name) {
+			sim = "Titel kommt in einem anderen Talkspirit-Text vor (Beschreibung, Aufgabe oder Kommentar)"
+		}
+		if sim != "" {
+			area := areaTensions
+			if mid == "" {
+				area = areaOpen
+			}
+			c.r.add(Finding{Area: area, Kind: Uncertain, Circle: c.hsCirclePath[str(h.o, "circle")], Key: tensionKey(h.o),
+				What: "ähnlicher Titel in Talkspirit", Original: str(h.o, "name"), Current: sim, HSID: h.id,
+				Detail: "vermutlich umbenannt übernommen – stichprobenartig prüfen"})
+			continue
+		}
+		if mid == "" {
+			c.r.add(Finding{Area: areaOpen, Kind: Missing, Circle: c.hsCirclePath[str(h.o, "circle")], Key: tensionKey(h.o),
+				What:     yesNo(str(h.o, "tensionBehavior") == "proposal", "Offener Governance-Vorschlag fehlt", "Offene Spannung fehlt"),
+				Original: strings.TrimSpace(str(h.o, "name") + "\n" + clip(plain(str(h.o, "body")), 2000)), HSID: h.id,
+				Detail: "Status " + str(h.o, "status") + ", keinem Meeting zugeordnet"})
+			continue
+		}
 		what := "Notiz fehlt"
 		if str(h.o, "tensionBehavior") == "proposal" {
 			what = "Governance-Vorschlag fehlt"

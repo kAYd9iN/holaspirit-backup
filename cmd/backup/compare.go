@@ -20,6 +20,7 @@ func runCompare(args []string) int {
 	hsDir := fs.String("holaspirit", "", "Holaspirit backup directory (made by holaspirit-backup v0.5.0) (required)")
 	tsDir := fs.String("talkspirit", "", "Talkspirit backup directory (required)")
 	out := fs.String("out", "./vergleich", "Directory for vergleich.xlsx")
+	asJSON := fs.Bool("json", false, "Also write befunde.json (all findings, for scripted checks)")
 	mig := fs.String("migrated-at", "", "End of the migration, YYYY-MM-DD or YYYY-MM-DDTHH:MM (UTC); estimated from the data if empty")
 	fs.Parse(args) // #nosec G104 -- FlagSet uses ExitOnError
 	if *hsDir == "" || *tsDir == "" {
@@ -49,6 +50,12 @@ func runCompare(args []string) int {
 	if err != nil {
 		slog.Error("writing report", "error", err)
 		return 2
+	}
+	if *asJSON {
+		if err := r.WriteJSON(*out); err != nil {
+			slog.Error("writing befunde.json", "error", err)
+			return 2
+		}
 	}
 	suspicious := 0
 	for _, f := range r.Findings {

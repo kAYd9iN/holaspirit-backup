@@ -78,7 +78,7 @@ main.go  ── GET /v1/whoami (Schlüssel, Tenant, Scopes prüfen)
   └─ runner.go (Worker Pool: 3 Goroutinen)
        ├─ worker: circles ──► circle-members (pro Kreis)
        ├─ worker: meetings ──► meeting-agenda-items (pro Meeting)
-       ├─ worker: tasks ──► subtasks (rekursiv) + task-comments (pro Aufgabe)
+       ├─ worker: tasks ──► subtasks (für jede Aufgabe, rekursiv) + task-comments (pro Aufgabe)
        ├─ worker: ... (alle Endpunkte aus internal/api/endpoints.go)
        │       ↕ koordiniert über Rate-Limiter + bounded channel
        └─ manifest.go (nach Abschluss aller Worker)
@@ -118,7 +118,7 @@ Organisationsdaten enthalten (Liste in `internal/api/endpoints.go`):
 | `goals.json` | `/v1/goals?archived_status=all` | `goal-key-results`, `goal-comments`¹ |
 | `time-periods.json` | `/v1/time-periods` | |
 | `documents.json` | `/v1/documents?archived_status=all` | `document-content`, `document-comments`¹ |
-| `audit-logs.json` | `/v1/audit-logs` (Admin, optional) | |
+| `audit-logs.json` | `/v1/audit-logs` (Admin, optional; `409 ACTIVITY_LOG_DISABLED` → `unavailable`) | |
 
 ¹ eine Anfrage pro Eintrag; `--quick` lässt sie weg.
 
@@ -161,58 +161,84 @@ Schutzmechanismen:
 ## Vergleich Holaspirit ↔ Talkspirit
 
 ```
-backup compare --holaspirit <dir> --talkspirit <dir> [--migrated-at …] [--out <dir>]
+backup compare --holaspirit <dir> --talkspirit <dir> [--migrated-at …] [--out <dir>] [--json]
 ```
 
 Liest ein Holaspirit-Backup von v0.5.0 und ein Talkspirit-Backup und schreibt
-`vergleich.xlsx` (`0600`, enthält Namen/E-Mails). Keine Netzwerkzugriffe. Die Arbeitsmappe
-schreibt `internal/xlsx` ohne Fremdbibliothek (Text immer als Inline-String, nie als Formel).
+`vergleich.xlsx` (`0600`, enthält Namen/E-Mails); `--json` zusätzlich `befunde.json` für
+skriptgestützte Prüfungen. Keine Netzwerkzugriffe. Die Arbeitsmappe schreibt `internal/xlsx`
+ohne Fremdbibliothek (Text immer als Inline-String, nie als Formel).
 
-**Aufbau der Arbeitsmappe** (von oben nach unten nach Wichtigkeit): Übersicht pro Bereich mit
-Priorität Hoch (Personen, Kreise, Rollen, Besetzungen, Richtlinien), Mittel (Felder, Ziele,
-Zeiträume, Projekte, Spalten, Labels, Aufgaben), Niedrig (Meetings, Traktanden/Notizen) →
-Arbeitsliste (Verdachtsfälle, Status-Auswahl, Verantwortlich, Kommentar) → Mängelliste Talkspirit
-(gleiche Nummern, Soll/Ist) → ein Blatt pro Bereich (alle Befunde) → Nicht prüfbar → Audit-Log.
+**Aufbau der Arbeitsmappe** (von oben nach unten nach Wichtigkeit): Übersicht mit „Ergebnis in
+Kürze“ und Zahlen pro Bereich – Priorität Hoch (Personen, Kreise, Rollen, Besetzungen,
+Richtlinien), Mittel (Felder, Ziele, Zeiträume, offene Spannungen, Projekte, Spalten, Labels,
+Aufgaben), Niedrig (Meetings, Traktanden/Notizen) → Arbeitsliste (Verdachtsfälle, Status-Auswahl,
+Verantwortlich, Kommentar) → Mängelliste Talkspirit (gleiche Nummern, Soll/Ist) → ein Blatt pro
+Bereich (alle Befunde) → Nicht prüfbar → Audit-Log.
 
-**Zuordnung.** Die Partner API kennt die Holaspirit-IDs nicht. Zugeordnet wird deshalb in
-mehreren Durchgängen, vom strengsten Merkmal zum lockersten; was in einem Durchgang ein
-Gegenstück findet, ist für die weiteren vergeben. Gleiche Merkmale werden als Multimenge
-gepaart, damit Anzahlen auch bei Mehrdeutigkeit stimmen.
+### Wie Talkspirit migrierte Daten ablegt (gegen echte Backups ermittelt, 2026-10-17)
+
+| Beobachtung | Folge für den Vergleich |
+|-------------|-------------------------|
+| Purpose, Accountabilities, Domänen, Beschreibungen, Dokumente, Feldwerte sind **BlockNote-JSON** (Rich-Text-Blöcke als String) | Text wird aus den Blöcken extrahiert (`blockText`) |
+| Verweise auf Kreise/Rollen sind **Mention-Objekte** mit dem **aktuellen** Namen (Umbenennungen schlagen durch); um Mentions fehlen oft Leerzeichen; Holaspirit hatte teils leere Mentions | Texte gelten auch als gleich, wenn sie ohne Verweisnamen oder ohne Leerzeichen übereinstimmen oder der Holaspirit-Text vollständig enthalten ist |
+| `created_at`/`updated_at` sind die **Holaspirit-Zeitstempel** | Stichtag lässt sich nicht aus Erstelldaten schätzen; ein späteres `updated_at` bedeutet eine spätere Bearbeitung |
+| Alle Mitgliedschaften tragen den **Import-Zeitpunkt** als `updated_at` | Stichtag = dieser Zeitpunkt (sofern nicht per `--migrated-at` gesetzt) |
+| Abgelaufene Wahlen (Facilitator, Secretary, Rep Link) bleiben mit `expires_at` bestehen | abgelaufene Mandate zählen auf beiden Seiten nicht |
+| Rollen-Mitglieder (`include=members`) und `/v1/memberships` | beide Quellen zusammen |
+| Feld „Strategie“ hing in Holaspirit an Kreis-Rollen, in Talkspirit am Kreis | Werte werden Kreis ↔ Kreis verglichen |
+| Holaspirit-Zeiträume sind Rhythmen („Monatlich“), Talkspirit-Zeiträume konkrete Perioden („2026-05“) | geprüft wird, ob jedes Ziel einen Zeitraum behalten hat |
+| Holaspirit markiert Erledigtes auch per `checked`/`completedAt` bei Status `current` | „erledigt“ = Status `done` oder abgehakt |
+| Talkspirit archiviert Unteraufgaben archivierter Aufgaben und manche erledigten Aufgaben | kein Befund |
+| `subtask_count` zählt **archivierte Unteraufgaben nicht**; v0.6.0 fragte Unteraufgaben nur bei Zähler > 0 ab | ab v0.6.1 werden Unteraufgaben für jede Aufgabe abgefragt; fehlende Unteraufgaben aus älteren Backups sind „nicht bestätigbar“ |
+| Aufgaben ohne Projekt zeigt die API nur, wenn der technische Benutzer beteiligt ist; gesperrte Konten liefert sie nie | solche Lücken sind „nicht bestätigbar“, nicht „fehlt“ |
+| Meetings ohne Termin („Evolution outside meeting“) beginnen beim Eröffnungszeitpunkt | Zuordnung über `scheduledAt` → `openedAt` → `createdAt` |
+| Holaspirit führt ein ungelöstes Traktandum über mehrere Meetings und im Backlog mit, Talkspirit hat es einmal | ein Titel, der in Talkspirit existiert (oder ≥ 60 % ähnlich ist oder in einem anderen Text vorkommt), gilt nicht als verloren |
+| Holaspirit-Traktanden verweisen teils auf Meetings, die schon in Holaspirit gelöscht waren | `VERWAIST_IN_HOLASPIRIT`, kein Verlust |
+| „Untitled note“-Traktanden in Talkspirit sind eigene Kreis-Notizen („Circle: …“) | nur in Talkspirit, kein Verlust |
+
+### Zuordnung
+
+Die Partner API kennt die Holaspirit-IDs nicht. Zugeordnet wird in mehreren Durchgängen, vom
+strengsten Merkmal zum lockersten; was in einem Durchgang ein Gegenstück findet, ist für die
+weiteren vergeben. Gleiche Merkmale werden als Multimenge gepaart, damit Anzahlen auch bei
+Mehrdeutigkeit stimmen.
 
 | Bereich | Merkmale (in Reihenfolge) |
 |---------|---------------------------|
 | Personen | E-Mail |
 | Kreise | Namenspfad, dann Name (→ `VERSCHOBEN`) |
 | Rollen | Kreispfad + Name, dann Name (→ `VERSCHOBEN`); Kreis-Rollen zählen zu den Kreisen |
-| Inhalte von Kreisen/Rollen | Purpose, Accountabilities, Domänen als Textmengen; HTML/Markdown/Leerraum zählen nicht, ≥ 90 % Wortübereinstimmung gilt als gleich; bei eingeladenen Rollen die Texte der Ursprungsrolle |
-| Rollenbesetzungen | E-Mail der Personen je Rolle; abgelaufene Holaspirit-Zuweisungen zählen nicht |
-| Richtlinien | Titel ↔ Talkspirit-Dokumente |
+| Inhalte von Kreisen/Rollen | Purpose, Accountabilities, Domänen als Textmengen (eins-zu-eins gepaart, siehe Toleranzen oben); bei eingeladenen Rollen die Texte der Ursprungsrolle |
+| Rollenbesetzungen | E-Mail der Personen je Rolle; Personen mit aktivem Konto ohne jede Rolle werden zusätzlich unter Personen zusammengefasst |
+| Richtlinien | Titel ↔ Talkspirit-Dokumente; Text gegen die veröffentlichte Version |
 | Ziele / Key Results | Titel |
-| Meetings | Titel + Minute, Kreis + Minute, Titel + Tag, Kreis + Tag, Minute, Titel; Meetings ohne Datum („Evolution outside meeting“) über den Erstellzeitpunkt |
-| Spannungen / Traktanden | Titel im zugeordneten Meeting, dann Titel + Minute/Tag gegen Spannungen und Traktanden, dann Titel |
-| Aufgaben | Titel + Minute, Titel + Tag, Titel im zugeordneten Projekt, Titel |
-| Projekte, Spalten, Labels | Name (Spalten/Labels innerhalb des zugeordneten Projekts) |
+| Projekte, Spalten, Labels | Name + Archiv-Status + Spaltensatz, dann Name + Archiv-Status, dann Name (gleichnamige Boards) |
+| Aufgaben | Titel + Minute + Status, Titel + Minute, Titel + Tag, Titel im Projekt, Titel |
+| Meetings | Titel + Minute, Kreis + Minute, Titel + Tag, Kreis + Tag, Minute, Titel |
+| Traktanden / offene Spannungen | Titel im zugeordneten Meeting, Titel + Minute/Tag gegen Spannungen und Traktanden, Titel; offene Spannungen = Holaspirit-Spannungen ohne Meeting |
 
-Zuordnungen nur über den Titel oder nur über die Uhrzeit werden als `UNSICHER_ZUGEORDNET`
-ausgewiesen.
+### Einordnung
 
-**Einordnung gegen den Migrationszeitpunkt** (`--migrated-at`, sonst geschätzt: der Tag, an dem
-die meisten Talkspirit-Kreise/-Rollen/-Personen angelegt wurden):
+Stichtag: `--migrated-at`, sonst der Import-Zeitpunkt der Mitgliedschaften.
 
-| Befund | Bedeutung |
-|--------|-----------|
-| `FEHLT` | in Holaspirit, in Talkspirit nicht gefunden |
-| `FEHLT_TEIL` | Objekt da, aber Accountability/Domäne/Purpose/Besetzung/Key Result fehlt, und das Objekt wurde seit der Migration nicht geändert |
-| `ABWEICHUNG_UNVERAENDERT` | abweichend, Talkspirit-Objekt seit der Migration unverändert → Verdacht Migrationsfehler |
-| `VERSCHOBEN` | nur unter einem anderen Kreis gefunden |
-| `NUR_IN_TALKSPIRIT` | in Talkspirit vor Migrationsende angelegt, im Holaspirit-Backup nicht vorhanden |
-| `ABWEICHUNG_BEARBEITET` | abweichend, Talkspirit-Objekt nach der Migration geändert → vermutlich gewollt |
-| `ABWEICHUNG_HS_NACH_MIGRATION` | Holaspirit-Objekt wurde nach der Migration noch geändert → Abweichung erwartbar |
-| `NEU_IN_TALKSPIRIT` | nach der Migration angelegt → legitime Arbeit |
+| Befund | Bedeutung | Verdacht |
+|--------|-----------|----------|
+| `FEHLT` | in Holaspirit, in Talkspirit nicht gefunden | ja |
+| `FEHLT_TEIL` | Objekt da, aber Accountability/Domäne/Purpose/Besetzung/Key Result/Feldwert fehlt; Objekt seit dem Stichtag unverändert | ja |
+| `ABWEICHUNG_UNVERAENDERT` | abweichend, Talkspirit-Objekt seit dem Stichtag unverändert | ja |
+| `VERSCHOBEN` | nur unter einem anderen Kreis gefunden, seit dem Stichtag unverändert | ja |
+| `NICHT_BESTAETIGBAR` | fehlt im Backup, aber API oder Backup können es nicht zeigen | nein (prüfen) |
+| `UNSICHER_ZUGEORDNET` | nur über Titel/Uhrzeit oder ähnlichen Titel zugeordnet | nein |
+| `VERWAIST_IN_HOLASPIRIT` | gehörte schon in Holaspirit zu Gelöschtem | nein |
+| `ZWISCHEN_BACKUP_UND_MIGRATION` | nach dem Holaspirit-Backup, aber vor dem Stichtag geändert/angelegt | nein |
+| `ABWEICHUNG_HS_NACH_MIGRATION` | Holaspirit-Objekt nach dem Stichtag geändert | nein |
+| `ABWEICHUNG_BEARBEITET` | Talkspirit-Objekt nach dem Stichtag geändert → vermutlich gewollt | nein |
+| `NUR_IN_TALKSPIRIT` | in Talkspirit vor dem Stichtag vorhanden, nicht im Holaspirit-Backup → in Talkspirit entstanden | nein |
+| `NEU_IN_TALKSPIRIT` | nach dem Stichtag angelegt | nein |
 
-Die ersten fünf gelten als Verdachtsfälle (Arbeitsliste/Mängelliste; Spalte „Verdacht“ in den Bereichsblättern). Verschobene Objekte, die nach dem Stichtag bearbeitet wurden, gelten als gewollt. Ein
-fehlendes Objekt kann auch nach der Migration absichtlich gelöscht worden sein; der Bericht
-listet dafür die Audit-Log-Ereignisse nach Migrationsende.
+Ein fehlendes Objekt kann auch nach dem Stichtag absichtlich gelöscht worden sein; der Bericht
+listet dafür die Audit-Log-Ereignisse nach dem Stichtag (falls das Aktivitätsprotokoll aktiv ist).
 
 **Nicht prüfbar** (kein Gegenstück in der Partner API) und nur mit Anzahl gelistet:
 Checklisten, Metriken, Publikationen samt Revisionen, Anhänge/Links ausserhalb von Aufgaben,

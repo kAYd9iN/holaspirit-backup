@@ -21,7 +21,7 @@ const (
 	// Moved: found, but under another parent (circle, project).
 	Moved Kind = "VERSCHOBEN"
 	// OnlyInTS: in Talkspirit, created before the migration ended, but not in
-	// the Holaspirit backup — unexpected.
+	// the Holaspirit backup — created in Talkspirit itself; not a loss.
 	OnlyInTS Kind = "NUR_IN_TALKSPIRIT"
 	// DiffEdited: differs, but the Talkspirit object was changed after the
 	// migration — probably a deliberate edit.
@@ -31,17 +31,28 @@ const (
 	DiffHSLater Kind = "ABWEICHUNG_HS_NACH_MIGRATION"
 	// NewInTS: created in Talkspirit after the migration — legitimate work.
 	NewInTS Kind = "NEU_IN_TALKSPIRIT"
+	// Gap: changed or created between the Holaspirit backup and the end of
+	// the migration — the backup cannot show that state, so the difference
+	// is expected.
+	Gap Kind = "ZWISCHEN_BACKUP_UND_MIGRATION"
+	// Unverified: absent from the Talkspirit backup, but the Partner API or
+	// the backup cannot show it (visibility, a request not made), so the
+	// loss is not proven.
+	Unverified Kind = "NICHT_BESTAETIGBAR"
+	// Orphan: Holaspirit data that already pointed at something deleted in
+	// Holaspirit (an agenda item of a deleted meeting) — not a migration loss.
+	Orphan Kind = "VERWAIST_IN_HOLASPIRIT"
 	// Uncertain: matched on the title alone (no timestamp agreed), so the
 	// pairing may be wrong; counts are still right.
 	Uncertain Kind = "UNSICHER_ZUGEORDNET"
 )
 
 // kindOrder sorts findings from "act on this" to "for information".
-var kindOrder = []Kind{Missing, MissingPart, DiffUntouched, Moved, OnlyInTS, Uncertain, DiffHSLater, DiffEdited, NewInTS}
+var kindOrder = []Kind{Missing, MissingPart, DiffUntouched, Moved, OnlyInTS, Unverified, Uncertain, Orphan, Gap, DiffHSLater, DiffEdited, NewInTS}
 
 // Suspicious reports whether a kind points at the migration.
 func (k Kind) Suspicious() bool {
-	return k == Missing || k == MissingPart || k == DiffUntouched || k == Moved || k == OnlyInTS
+	return k == Missing || k == MissingPart || k == DiffUntouched || k == Moved
 }
 
 // Finding is one reported difference.
@@ -147,6 +158,8 @@ func (r *Report) moved(hsUpdated, tsUpdated time.Time) Kind {
 }
 
 // classify decides how to read a difference between a matched pair.
+// Talkspirit keeps Holaspirit's created_at/updated_at on migrated objects,
+// so a later time on the Talkspirit side means a later edit.
 func (r *Report) classify(hsUpdated, tsUpdated time.Time) Kind {
 	if !hsUpdated.IsZero() && hsUpdated.After(r.MigratedAt) {
 		return DiffHSLater
@@ -154,13 +167,25 @@ func (r *Report) classify(hsUpdated, tsUpdated time.Time) Kind {
 	if !tsUpdated.IsZero() && tsUpdated.After(r.MigratedAt) {
 		return DiffEdited
 	}
+	if r.inGap(tsUpdated) {
+		return Gap
+	}
 	return DiffUntouched
+}
+
+// inGap reports whether t lies between the Holaspirit backup and the end of
+// the migration.
+func (r *Report) inGap(t time.Time) bool {
+	return !t.IsZero() && !r.HSTime.IsZero() && t.After(r.HSTime) && !t.After(r.MigratedAt)
 }
 
 // extra classifies a Talkspirit object without Holaspirit counterpart.
 func (r *Report) extra(tsCreated time.Time) Kind {
 	if !tsCreated.IsZero() && tsCreated.After(r.MigratedAt) {
 		return NewInTS
+	}
+	if r.inGap(tsCreated) {
+		return Gap
 	}
 	return OnlyInTS
 }

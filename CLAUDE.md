@@ -147,6 +147,15 @@ without a key, strict mode incompatible with bot commits).
 - Design & Architektur (ID: 2326535)
 - Betrieb & Installation (ID: 2490371)
 
+## Talkspirit data facts (real backups, 2026-10-17 — drive internal/compare)
+
+- Rich text (purpose, accountabilities, domains, descriptions, documents, field values) is BlockNote JSON in a string; mentions are `{"type":"mention","props":{"userName":…}}` with the *current* (possibly renamed) name, often without surrounding spaces
+- created_at/updated_at are Holaspirit's; every membership carries the import time as updated_at → default cut-off
+- `subtask_count` excludes archived sub-tasks → backup fetches sub-tasks for every task (v0.6.1)
+- API hides project-less tasks the technical user is not involved in and suspended users → `NICHT_BESTAETIGBAR`, never `FEHLT`
+- Expired elections stay with `expires_at`; Holaspirit `checked`/`completedAt` = done; `/v1/audit-logs` → 409 `ACTIVITY_LOG_DISABLED` when the activity log is off
+- Cross-checks used: accountabilities 2579 = 2579, domains 160 = 160 (HS vs TS)
+
 ## Holaspirit live-run findings (2026-10-14, v0.5.0 — historic)
 
 - Pagination per spec works (533 roles, 4081 meetings, 5490 tasks).

@@ -180,11 +180,93 @@ var (
 	mdCharsRe = regexp.MustCompile("[*_#>`~\\\\]")
 	bulletRe  = regexp.MustCompile(`(^|\s)[-•·–]\s`)
 	wordRe    = regexp.MustCompile(`[\p{L}\p{N}]+`)
+	// Holaspirit mentions: <a data-mention="id|type">Name</a>
+	hsMentionRe = regexp.MustCompile(`(?s)<a[^>]*data-mention[^>]*>.*?</a>`)
+	// mentions Talkspirit kept as plain text: "@Name"
+	atMentionRe = regexp.MustCompile(`@[\p{L}\p{N}][^\s,;.)]*`)
 )
 
-// plain strips markup (HTML from Holaspirit, Markdown from Talkspirit) and
-// collapses whitespace, keeping the wording and case.
-func plain(s string) string {
+// blockText extracts the text of a Talkspirit rich-text value: a JSON array of
+// BlockNote blocks ({type, content: [{type: "text", text}], children}) stored
+// as a string. Blocks become lines; ok is false when s is not such a value.
+func blockText(s string, mentions bool) (string, bool) {
+	t := strings.TrimSpace(s)
+	if !strings.HasPrefix(t, "[") || !strings.Contains(t, `"type"`) {
+		return "", false
+	}
+	var blocks []any
+	if json.Unmarshal([]byte(t), &blocks) != nil {
+		return "", false
+	}
+	var lines []string
+	var inline func(v any, b *strings.Builder)
+	inline = func(v any, b *strings.Builder) {
+		switch x := v.(type) {
+		case []any:
+			for _, e := range x {
+				inline(e, b)
+			}
+		case map[string]any:
+			if txt, ok := x["text"].(string); ok {
+				b.WriteString(txt)
+			}
+			// Mentions of circles, roles and people carry their name in props.
+			if x["type"] == "mention" && mentions {
+				if p, ok := x["props"].(map[string]any); ok {
+					for _, k := range []string{"userName", "name", "label", "title"} {
+						if n, ok := p[k].(string); ok && n != "" {
+							b.WriteString(" " + n + " ")
+							break
+						}
+					}
+				}
+			}
+			for _, k := range []string{"content", "rows", "cells"} {
+				if c, ok := x[k]; ok {
+					inline(c, b)
+					if k == "cells" {
+						b.WriteString(" ")
+					}
+				}
+			}
+		case string:
+			b.WriteString(x)
+		}
+	}
+	var walk func(list []any)
+	walk = func(list []any) {
+		for _, e := range list {
+			m, ok := e.(map[string]any)
+			if !ok {
+				continue
+			}
+			var b strings.Builder
+			inline(m["content"], &b)
+			if line := strings.TrimSpace(b.String()); line != "" {
+				lines = append(lines, line)
+			}
+			if ch, ok := m["children"].([]any); ok {
+				walk(ch)
+			}
+		}
+	}
+	walk(blocks)
+	return strings.Join(lines, "\n"), true
+}
+
+// plain strips markup (HTML from Holaspirit; BlockNote JSON or Markdown from
+// Talkspirit) and collapses whitespace, keeping the wording and case.
+func plain(s string) string { return plainText(s, true) }
+
+// plainText is plain; mentions=false drops the names of mentioned circles,
+// roles and people (Talkspirit shows their current, possibly renamed name).
+func plainText(s string, mentions bool) string {
+	if t, ok := blockText(s, mentions); ok {
+		s = t
+	} else if !mentions {
+		s = hsMentionRe.ReplaceAllString(s, " ")
+		s = atMentionRe.ReplaceAllString(s, " ")
+	}
 	s = strings.ReplaceAll(s, "<br", " <br")
 	s = strings.ReplaceAll(s, "</p>", " </p>")
 	s = tagRe.ReplaceAllString(s, " ")
@@ -211,10 +293,28 @@ func words(s string) map[string]bool {
 	return out
 }
 
-// sameText reports whether two texts say the same, tolerating formatting and
-// small wording differences (word-set Jaccard similarity ≥ 0.9).
+// sameText reports whether two texts say the same. Tolerated: formatting,
+// small wording differences, lost spaces, and mentions — Talkspirit shows a
+// mentioned role or circle under its current name, which may have been
+// renamed, and sometimes fills a mention Holaspirit had left empty.
 func sameText(a, b string) bool {
-	a, b = norm(a), norm(b)
+	na, nb := norm(a), norm(b)
+	if similar(na, nb) || squash(na) == squash(nb) {
+		return true
+	}
+	ma, mb := strings.ToLower(plainText(a, false)), strings.ToLower(plainText(b, false))
+	return similar(ma, mb) || squash(ma) == squash(mb)
+}
+
+// squash keeps only letters and digits, so lost or extra spaces do not count.
+func squash(s string) string {
+	return strings.Join(wordRe.FindAllString(s, -1), "")
+}
+
+// similar compares two normalized texts by their word sets: Jaccard ≥ 0.9,
+// a (the Holaspirit side) fully contained in b, or one set almost contained
+// in the other.
+func similar(a, b string) bool {
 	if a == b {
 		return true
 	}
@@ -228,8 +328,20 @@ func sameText(a, b string) bool {
 			inter++
 		}
 	}
+	// Every word of a (the Holaspirit text) is still there: nothing was lost,
+	// Talkspirit only added (e.g. a mention name Holaspirit had left empty).
+	if inter == len(wa) && len(wa) >= 3 {
+		return true
+	}
+	small, large := len(wa), len(wb)
+	if small > large {
+		small, large = large, small
+	}
 	union := len(wa) + len(wb) - inter
-	return float64(inter)/float64(union) >= 0.9
+	if float64(inter)/float64(union) >= 0.9 {
+		return true
+	}
+	return float64(inter)/float64(small) >= 0.95 && float64(inter)/float64(large) >= 0.75
 }
 
 // short shortens a text for a report line.
