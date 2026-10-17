@@ -96,7 +96,9 @@ var endpoints = []Endpoint{
 	// /v1/tasks lists top-level tasks only; sub-tasks come per parent.
 	{Name: "tasks", Path: "/v1/tasks?archived_status=all&" + taskFields, Scope: "tasks:read",
 		Children: []Child{
-			{Name: "subtasks", Path: "/v1/tasks?archived_status=all&" + taskFields + "&parent_task_id=%s", OnlyIf: "subtask_count", Recursive: true},
+			// For every task: subtask_count leaves out archived sub-tasks, so
+			// it cannot decide whether a task has any.
+			{Name: "subtasks", Path: "/v1/tasks?archived_status=all&" + taskFields + "&parent_task_id=%s", Recursive: true},
 			{Name: "task-comments", Path: "/v1/tasks/%s/comments", Detail: true},
 		}},
 	{Name: "projects", Path: "/v1/projects?archived_status=all&include=assignees", Scope: "projects:read",
@@ -117,7 +119,7 @@ var endpoints = []Endpoint{
 			{Name: "document-comments", Path: "/v1/documents/%s/comments", Detail: true},
 		}},
 	{Name: "audit-logs", Path: "/v1/audit-logs", Scope: "audit_log:read",
-		Optional: "needs the audit_log:read scope and an organization-admin key"},
+		Optional: "needs the audit_log:read scope, an organization-admin key and the activity log switched on"},
 }
 
 // AllEndpoints returns every endpoint to back up.

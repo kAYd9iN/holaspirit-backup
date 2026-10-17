@@ -1,6 +1,7 @@
 package compare
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,9 @@ var kindLabel = map[Kind]string{
 	DiffHSLater:   "In Holaspirit nach Stichtag geändert",
 	DiffEdited:    "In Talkspirit nach Stichtag bearbeitet",
 	NewInTS:       "Neu nach Stichtag",
+	Gap:           "Zwischen Holaspirit-Backup und Migration geändert",
+	Unverified:    "Nicht bestätigbar (API/Backup)",
+	Orphan:        "Verwaist schon in Holaspirit",
 }
 
 var kindExplain = map[Kind]string{
@@ -31,11 +35,14 @@ var kindExplain = map[Kind]string{
 	MissingPart:   "Objekt ist da, aber ein Teil fehlt (Accountability, Domäne, Purpose, Besetzung, Key Result …) – und das Objekt wurde nach dem Stichtag nicht bearbeitet.",
 	DiffUntouched: "Inhalt weicht ab, obwohl niemand das Talkspirit-Objekt nach dem Stichtag geändert hat.",
 	Moved:         "Nur unter einem anderen Kreis gefunden; seit dem Stichtag nicht bearbeitet.",
-	OnlyInTS:      "In Talkspirit vor dem Stichtag vorhanden, im Holaspirit-Backup nicht – unerwartet.",
+	OnlyInTS:      "In Talkspirit vor dem Stichtag vorhanden, im Holaspirit-Backup nicht – in Talkspirit selbst entstanden, kein Verlust.",
 	Uncertain:     "Nur über Titel oder Uhrzeit zugeordnet. Die Anzahl stimmt, die einzelne Paarung kann falsch sein.",
 	DiffHSLater:   "Das Holaspirit-Objekt wurde nach dem Stichtag noch geändert – Abweichung erwartbar.",
 	DiffEdited:    "Das Talkspirit-Objekt wurde nach dem Stichtag bearbeitet – vermutlich gewollt.",
 	NewInTS:       "Nach dem Stichtag in Talkspirit angelegt – legitime neue Arbeit.",
+	Gap:           "Geändert oder angelegt nach dem Holaspirit-Backup, aber vor Ende der Migration – diesen Stand kennt das Backup nicht, Abweichung erwartbar.",
+	Unverified:    "Fehlt im Talkspirit-Backup, aber die API zeigt es nicht oder das Backup hat es nicht abgefragt – Verlust nicht bewiesen, stichprobenartig in der Oberfläche prüfen.",
+	Orphan:        "Gehörte schon in Holaspirit zu etwas Gelöschtem (z. B. Traktandum eines gelöschten Meetings) – kein Migrationsverlust.",
 }
 
 // statusList is the drop-down of the work list.
@@ -56,6 +63,19 @@ func (r *Report) WriteFiles(dir string) (string, error) {
 		return "", errors.Join(err, f.Close())
 	}
 	return path, f.Close()
+}
+
+// WriteJSON writes all findings to befunde.json in dir (0600).
+func (r *Report) WriteJSON(dir string) error {
+	b, err := json.MarshalIndent(struct {
+		MigratedAt time.Time
+		Areas      []*AreaStats
+		Findings   []Finding
+	}{r.MigratedAt, r.Areas, r.Findings}, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "befunde.json"), b, 0600)
 }
 
 func prioStyle(p string) xlsx.Style {
@@ -136,8 +156,8 @@ func (r *Report) cutoff() string {
 
 func (r *Report) overviewSheet(suspicious int) *xlsx.Sheet {
 	sh := &xlsx.Sheet{Name: "Übersicht", TabColor: xlsx.ColorBlue, Landscape: true, Heights: map[int]float64{1: 30}}
-	sh.Widths = []float64{11, 26, 12, 12, 12, 10, 10, 13, 11, 13, 13, 13, 12, 12, 44}
-	const cols = 15
+	sh.Widths = []float64{11, 26, 12, 12, 12, 10, 10, 13, 11, 13, 13, 13, 12, 14, 13, 50}
+	const cols = 16
 	merge := func(row int) { sh.Merges = append(sh.Merges, fmt.Sprintf("A%d:%s", row, xlsx.Ref(cols, row))) }
 
 	merge(sh.Add(s("Migrationsabgleich Holaspirit → Talkspirit", xlsx.Title)))
@@ -158,30 +178,56 @@ func (r *Report) overviewSheet(suspicious int) *xlsx.Sheet {
 		}
 	}
 	sh.Add()
+	merge(sh.Add(s("Ergebnis in Kürze", xlsx.Subtitle)))
+	var complete []string
+	for _, a := range r.Areas {
+		k := a.Kinds
+		susp := k[Missing] + k[MissingPart] + k[DiffUntouched] + k[Moved]
+		if susp == 0 {
+			if k[Unverified] == 0 && a.HS > 0 {
+				complete = append(complete, a.Area)
+			}
+			continue
+		}
+		var parts []string
+		for _, kk := range []Kind{Missing, MissingPart, DiffUntouched, Moved} {
+			if k[kk] > 0 {
+				parts = append(parts, fmt.Sprintf("%d %s", k[kk], strings.ToLower(kindLabel[kk])))
+			}
+		}
+		row := sh.Add(s(AreaPriority(a.Area), prioStyle(AreaPriority(a.Area))), s(a.Area, xlsx.Bold), s(strings.Join(parts, ", "), xlsx.Wrap))
+		sh.Merges = append(sh.Merges, fmt.Sprintf("C%d:%s", row, xlsx.Ref(cols, row)))
+	}
+	if len(complete) > 0 {
+		row := sh.Add(s("ok", xlsx.Good), s("Vollständig migriert", xlsx.Bold), s(strings.Join(complete, ", "), xlsx.Good))
+		sh.Merges = append(sh.Merges, fmt.Sprintf("C%d:%s", row, xlsx.Ref(cols, row)))
+	}
+	for _, a := range r.Areas {
+		if n := a.Kinds[Unverified]; n > 0 {
+			row := sh.Add(s("prüfen", xlsx.PrioLow), s(a.Area, xlsx.Bold), s(fmt.Sprintf("%d nicht bestätigbar (API/Backup) – siehe Bereichsblatt", n), xlsx.Wrap))
+			sh.Merges = append(sh.Merges, fmt.Sprintf("C%d:%s", row, xlsx.Ref(cols, row)))
+		}
+	}
+	sh.Add()
 	merge(sh.Add(s("Ergebnis pro Bereich", xlsx.Subtitle)))
 
 	head := sh.Add(s("Priorität", xlsx.Header), s("Bereich", xlsx.Header), s("Holaspirit", xlsx.Header), s("Talkspirit", xlsx.Header),
 		s("zugeordnet", xlsx.Header), s("Fehlt", xlsx.Header), s("Teil fehlt", xlsx.Header), s("Abweichend (unverändert)", xlsx.Header),
-		s("An anderer Stelle", xlsx.Header), s("Nur in Talkspirit (vor Stichtag)", xlsx.Header), s("Verdachtsfälle total", xlsx.Header),
-		s("Nach Stichtag bearbeitet", xlsx.Header), s("Neu nach Stichtag", xlsx.Header), s("Unsicher zugeordnet", xlsx.Header),
-		s("Hinweis", xlsx.Header))
+		s("An anderer Stelle", xlsx.Header), s("Verdachtsfälle total", xlsx.Header), s("Nicht bestätigbar", xlsx.Header),
+		s("Unsicher / ähnlich", xlsx.Header), s("Verwaist in Holaspirit", xlsx.Header), s("Nach Backup/Stichtag geändert", xlsx.Header),
+		s("Neu / nur in Talkspirit", xlsx.Header), s("Hinweis", xlsx.Header))
 	sh.Heights[head] = 42
-	var tot [12]int
+	var tot [13]int
 	for _, a := range r.Areas {
 		k := a.Kinds
-		susp := k[Missing] + k[MissingPart] + k[DiffUntouched] + k[Moved] + k[OnlyInTS]
-		vals := []int{a.HS, a.TS, a.Matched, k[Missing], k[MissingPart], k[DiffUntouched], k[Moved], k[OnlyInTS], susp,
-			k[DiffEdited] + k[DiffHSLater], k[NewInTS], k[Uncertain]}
+		susp := k[Missing] + k[MissingPart] + k[DiffUntouched] + k[Moved]
+		vals := []int{a.HS, a.TS, a.Matched, k[Missing], k[MissingPart], k[DiffUntouched], k[Moved], susp,
+			k[Unverified], k[Uncertain], k[Orphan], k[DiffEdited] + k[DiffHSLater] + k[Gap], k[NewInTS] + k[OnlyInTS]}
 		p := AreaPriority(a.Area)
 		row := []xlsx.Cell{s(p, prioStyle(p)), s(a.Area, xlsx.Bold)}
 		for i, v := range vals {
 			tot[i] += v
-			susCol := i >= 3 && i <= 8
-			c := count(v, susCol)
-			if i == 8 && v > 0 {
-				c = s(v, xlsx.Bad)
-			}
-			row = append(row, c)
+			row = append(row, count(v, i >= 3 && i <= 7))
 		}
 		row = append(row, s(a.Note, xlsx.Wrap))
 		sh.Add(row...)

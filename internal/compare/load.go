@@ -24,6 +24,7 @@ type hsSet struct {
 	customFields, rolesCF  []obj
 	counts                 map[string]int    // record counts of files compared only by count
 	meetingTemplates       map[string]string // id → name
+	timeframeName          map[string]string // id → name
 }
 
 // tsSet is the Talkspirit backup.
@@ -46,6 +47,7 @@ type tsSet struct {
 	cfCircle, cfRole, cfUser   []obj
 	auditLogs                  []obj
 	have                       map[string]bool // which files exist
+	subtaskParents             map[string]bool // tasks whose sub-tasks were fetched
 }
 
 func manifestTime(dir string) time.Time {
@@ -108,6 +110,10 @@ func loadHS(dir string) (*hsSet, error) {
 	h.timeframes = l.arr("timeframes")
 	h.customFields = l.arr("custom-fields")
 	h.rolesCF = l.arr("roles-custom-fields")
+	h.timeframeName = map[string]string{}
+	for _, t := range h.timeframes {
+		h.timeframeName[str(t, "id")] = str(t, "name")
+	}
 	h.meetingTemplates = map[string]string{}
 	for _, t := range l.arr("meetingtemplates") {
 		h.meetingTemplates[str(t, "id")] = str(t, "name")
@@ -177,6 +183,10 @@ func loadTS(dir string) (*tsSet, error) {
 		return nil, err
 	}
 	t.have["subtasks"] = ok
+	t.subtaskParents = map[string]bool{}
+	for id := range sub {
+		t.subtaskParents[id] = true
+	}
 	for _, list := range sub {
 		t.tasks = append(t.tasks, list...)
 	}

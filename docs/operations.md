@@ -142,9 +142,8 @@ backup.exe compare `
   --out C:\Backups\vergleich
 ```
 
-- `--migrated-at`: Ende der Migration in UTC. Ohne Angabe wird es geschätzt (der Tag, an dem die
-  meisten Kreise/Rollen/Personen in Talkspirit angelegt wurden) und im Bericht als „geschätzt“
-  ausgewiesen. Davon hängt ab, ob eine Abweichung als vermutlich gewollt oder als Verdacht auf
+- `--migrated-at`: Ende der Migration in UTC (Stichtag). Ohne Angabe gilt der Import-Zeitpunkt,
+  den Talkspirit allen migrierten Mitgliedschaften gibt; der Bericht weist ihn als „geschätzt“ aus. Davon hängt ab, ob eine Abweichung als vermutlich gewollt oder als Verdacht auf
   einen Migrationsfehler eingeordnet wird.
 - Ergebnis: `vergleich.xlsx`. Enthält Namen und E-Mail-Adressen: nicht ins Repository, nicht in
   Tickets kopieren.
@@ -237,7 +236,7 @@ der Rest des Backups bleibt verwendbar.
    |---------|-----------|
    | `endpoint ok` | vollständig gesichert; `records` = Anzahl Einträge, `sub-resources` = Einträge pro Unter-Ressource |
    | `endpoint incomplete` | Daten geschrieben, aber nicht alles abrufbar: 10'000er-Grenze der API oder einzelne Unter-Ressourcen fehlgeschlagen (Details in der Meldung) |
-   | `endpoint not available` | Audit-Log für diesen Schlüssel nicht lesbar (kein Admin) — kein Fehler |
+   | `endpoint not available` | Audit-Log nicht lesbar (kein Admin-Schlüssel oder Aktivitätsprotokoll ausgeschaltet) — kein Fehler |
    | `endpoint failed` | nichts gesichert; Grund in der Meldung (z. B. „lacks the … scope“) |
 
 3. **Plausibilität:** `records` von `users`, `roles`, `circles` mit der Talkspirit-Oberfläche
