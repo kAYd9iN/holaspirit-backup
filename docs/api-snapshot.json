@@ -1,9 +1,9 @@
 {
-  "generated": "2026-10-16T18:01:44Z",
+  "generated": "2026-11-03T13:05:34Z",
   "sources": {
     "openapi": {
       "url": "partner-api.talkspirit.com/v1/openapi.json",
-      "version": "0.75.0"
+      "version": "0.79.0"
     }
   },
   "endpoints": {

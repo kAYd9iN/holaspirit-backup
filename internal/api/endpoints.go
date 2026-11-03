@@ -72,6 +72,9 @@ const taskFields = "include=assignees,attachments,description,labels"
 //   - /v1/structure-exports: needs POST to start an export; the client is
 //     GET-only by design, and the export holds the same structure as
 //     circles/roles/memberships
+//   - /v1/{checklist-metric,goal,task,user}-exports/{export_id}/file: download
+//     of an export that must first be started with POST (GET-only client);
+//     the data is already covered by the list routes
 //   - /v1/*/{id} detail routes: same fields as the list routes
 //   - /healthz: diagnostics
 var endpoints = []Endpoint{
