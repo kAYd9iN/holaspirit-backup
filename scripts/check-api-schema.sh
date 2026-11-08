@@ -138,7 +138,8 @@ known = {find_route(r) for r in ENDPOINTS.values()}
 known |= {find_route("/v1/roles/{id}/members"), find_route("/v1/users/{id}/memberships")}
 untracked = sorted(p for p, item in spec.get("paths", {}).items()
                    if "get" in item and p not in known and p.startswith("/v1/")
-                   and not p.endswith("_id}") and "/structure-exports" not in p)
+                   and not p.endswith("_id}") and "/structure-exports" not in p
+                   and not p.endswith("-exports/{export_id}/file"))
 endpoints["__untracked_get_routes__"] = {"fields": untracked, "params": []}
 
 print(json.dumps({
